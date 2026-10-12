@@ -1,0 +1,15 @@
+# Версии проверены на Python 3.14 (Windows). Обновляй осознанно: после обновления прогоняй тесты.
+fastapi==0.143.0
+starlette==1.7.0
+uvicorn[standard]==0.54.0
+aiogram[proxy]==3.31.0
+aiosqlite==0.22.1
+pillow==12.3.0
+python-dotenv==1.2.4
+python-multipart==0.0.32
+pydantic==2.13.5
+
+# для тестов
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
