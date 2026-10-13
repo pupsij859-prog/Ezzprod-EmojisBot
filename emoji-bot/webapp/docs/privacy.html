@@ -4,37 +4,57 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>политика конфиденциальности</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; background: #0b111b; color: #e6edf7; font: 16px/1.55 Inter, system-ui, sans-serif; }
-    main { max-width: 640px; margin: 0 auto; padding: 32px 20px 64px; }
-    h1 { font-size: 24px; margin: 0 0 8px; }
-    h2 { font-size: 17px; margin: 28px 0 6px; color: #a8c7ef; }
-    p, li { color: #b9c6d8; }
-    .draft { margin: 16px 0 24px; padding: 12px 14px; border-radius: 12px; background: #1b2a3d; color: #e8c547; font-size: 14px; }
-  </style>
+  <title>Политика конфиденциальности</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="docs.css">
 </head>
 <body>
-<main>
-  <h1>политика конфиденциальности</h1>
-  <p class="draft">черновик. Перед запуском для реальных пользователей замени этот текст на утверждённую политику.</p>
+<div class="dk">
+  <nav class="dk-nav" id="dk-nav" aria-label="Документы"></nav>
 
-  <h2>какие данные мы храним</h2>
-  <ul>
-    <li>Telegram ID, имя и @username, которые передаёт Telegram при открытии приложения.</li>
-    <li>Баланс генераций, историю начислений и списаний, созданные паки и сохранённые стили.</li>
-    <li>Логотипы, которые вы загружаете: мы перекодируем картинку и храним только её копию.</li>
-  </ul>
+  <main class="dk-doc">
+    <header class="dk-head">
+      <span data-doc-emoji></span>
+      <div class="dk-meta">
+        <span class="dk-chip">Обновлено <b>13 октября 2026</b></span>
+        <span class="dk-chip dk-chip--draft">Черновик</span>
+      </div>
+      <h1>Политика конфиденциальности</h1>
+      <p class="dk-lead">Мы храним только то, без чего не сможем собрать ваш пак и помочь вам. Ничего лишнего.</p>
+    </header>
 
-  <h2>зачем</h2>
-  <p>Чтобы собирать ваши паки, начислять генерации и бонусы, обрабатывать платежи и отвечать в поддержке.</p>
+    <section class="dk-sec">
+      <h2><span class="dk-num">01</span>Какие данные мы храним</h2>
+      <ul class="dk-list">
+        <li>Telegram ID, имя и @username, которые Telegram передаёт при открытии приложения;</li>
+        <li>баланс генераций, историю начислений и списаний, созданные паки и сохранённые стили;</li>
+        <li>логотипы, которые вы загружаете: мы перекодируем картинку и храним только её копию.</li>
+      </ul>
+    </section>
 
-  <h2>платёжные данные</h2>
-  <p>Мы не получаем и не храним данные карт. Оплата Stars проходит внутри Telegram.</p>
+    <section class="dk-sec">
+      <h2><span class="dk-num">02</span>Зачем они нужны</h2>
+      <ul class="dk-list">
+        <li>собирать ваши паки с ником, логотипом и цветами;</li>
+        <li>начислять генерации, бонусы за друзей и открывать Pro;</li>
+        <li>обрабатывать платежи и возвраты;</li>
+        <li>отвечать на обращения в поддержку.</li>
+      </ul>
+    </section>
 
-  <h2>удаление данных</h2>
-  <p>Напишите в поддержку из профиля, и мы удалим ваши данные и загруженные логотипы.</p>
-</main>
+    <section class="dk-sec">
+      <h2><span class="dk-num">03</span>Платёжные данные</h2>
+      <p>Оплата Stars проходит внутри Telegram. Данные карт мы <mark>не получаем и не храним</mark>.</p>
+    </section>
+
+    <section class="dk-sec">
+      <h2><span class="dk-num">04</span>Удаление данных</h2>
+      <p>Напишите в поддержку из профиля — удалим ваши данные и загруженные логотипы.</p>
+    </section>
+
+    <p class="dk-foot">Черновик. Перед запуском для реальных пользователей замените этот текст на утверждённую политику.</p>
+  </main>
+</div>
+<script type="module" src="docs.js"></script>
 </body>
 </html>

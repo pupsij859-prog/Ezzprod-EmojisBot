@@ -32,7 +32,8 @@ export function openDocs() {
       h('h2', { class: 'modal__title' }, 'Документы'),
       Group(
         Row({ label: 'Условия покупки', iconName: 'doc', onClick: () => open('/docs/terms.html') }),
-        Row({ label: 'Политика конфиденциальности', iconName: 'doc', onClick: () => open('/docs/privacy.html') })),
+        Row({ label: 'Политика конфиденциальности', iconName: 'doc', onClick: () => open('/docs/privacy.html') }),
+        Row({ label: 'Возврат Stars', iconName: 'doc', onClick: () => open('/docs/refund.html') })),
       Button({ label: 'Закрыть', variant: 'ghost', onClick: close }),
     ],
   });

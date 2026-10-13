@@ -1,5 +1,5 @@
 import { api, ApiError } from '../api.js';
-import { Button, GlowIcon, Quote, Skeleton, setBusy } from '../components.js';
+import { BigEmoji, Button, Quote, Skeleton, setBusy } from '../components.js';
 import { openOverlay } from '../nav.js';
 import { setPersonalization, state } from '../store.js';
 import { haptic } from '../tg.js';
@@ -32,7 +32,7 @@ export function openStyles(onApply) {
           const left = Math.max(1, proMin - purchased);
           body.append(
             h('div', { class: 'locked' },
-              GlowIcon('lock', 'locked__icon'),
+              BigEmoji('lock', 'locked__icon'),
               h('p', { class: 'locked__title' }, 'Стили доступны в Pro'),
               Quote({ emoji: 'lock', title: 'Стили', text: 'сохраняй текст и цвета под своим названием и применяй к любому паку одним тапом.' }),
               h('div', { class: 'meter', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': proMin, 'aria-valuenow': purchased },

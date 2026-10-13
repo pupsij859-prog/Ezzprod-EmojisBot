@@ -1,0 +1,70 @@
+/* Документы (условия, политика, возврат): навигация слева и документ справа, на телефоне навигация сверху. */
+:root {
+  color-scheme: dark;
+  --bg: #08090b;
+  --panel: #101216;
+  --panel-2: #171a20;
+  --line: rgba(255, 255, 255, 0.07);
+  --text: #f4f6fa;
+  --text-2: #c3cad6;
+  --text-3: #7f8796;
+  --accent: #5b8cff;
+  --font: 'Open Sans', -apple-system, 'Segoe UI', Roboto, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 15.5px/1.7 var(--font); -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+
+.dk { display: grid; grid-template-columns: 270px minmax(0, 760px); justify-content: center; align-items: start; gap: 26px; padding: 40px 24px 72px; }
+
+/* ── навигация */
+.dk-nav { position: sticky; top: 24px; display: grid; gap: 4px; padding: 10px; border-radius: 24px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); }
+.dk-item { display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 16px; text-decoration: none; transition: background-color 0.15s; }
+.dk-item:hover { background: rgba(255, 255, 255, 0.035); }
+.dk-item.is-active { background: var(--panel-2); box-shadow: inset 0 0 0 1px rgba(150, 175, 220, 0.3); }
+.dk-item__text { display: grid; gap: 2px; min-width: 0; }
+.dk-item__text b { font: 700 14.5px/1.25 var(--font); color: var(--text); }
+.dk-item__text span { font: 500 12.5px/1.3 var(--font); color: var(--text-3); }
+.dk-item .dk-emoji { width: 44px; height: 44px; }
+
+/* ── документ */
+.dk-doc { padding: 40px 44px 44px; border-radius: 28px; background: linear-gradient(180deg, #0f1115 0%, #0c0d10 100%); box-shadow: inset 0 0 0 1px var(--line); }
+.dk-head { display: grid; grid-template-columns: 124px 1fr; gap: 6px 22px; align-items: start; padding-bottom: 30px; border-bottom: 1px solid var(--line); }
+.dk-head .dk-emoji { grid-row: span 3; width: 120px; height: 120px; margin-top: 18px; filter: drop-shadow(0 14px 26px rgba(0, 0, 0, 0.5)); }
+.dk-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.dk-chip { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 999px; background: rgba(91, 140, 255, 0.12); color: #9fb7e8; font: 700 12.5px/1 var(--font); }
+.dk-chip b { color: #dce6ff; }
+.dk-chip--draft { background: rgba(226, 194, 98, 0.13); color: #e8c86a; }
+.dk-head h1 { margin: 6px 0 0; font: 800 clamp(30px, 4.2vw, 42px)/1.08 var(--font); letter-spacing: -0.02em; }
+.dk-lead { margin: 6px 0 0; color: var(--text-2); font-size: 16px; line-height: 1.6; }
+
+.dk-sec { padding-top: 30px; }
+.dk-sec h2 { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; font: 800 18px/1.3 var(--font); }
+.dk-num { flex: none; display: grid; place-items: center; width: 30px; height: 26px; border-radius: 8px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); color: #93a6cb; font: 800 11.5px/1 var(--font); letter-spacing: 0.04em; }
+.dk-sec p { margin: 0 0 10px 42px; color: var(--text-2); }
+.dk-list { margin: 0 0 0 42px; padding: 0; list-style: none; display: grid; gap: 8px; }
+.dk-list li { position: relative; padding-left: 18px; color: var(--text-2); }
+.dk-list li::before { content: ''; position: absolute; left: 0; top: 0.72em; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px rgba(91, 140, 255, 0.6); }
+mark { padding: 1px 7px; border-radius: 7px; background: rgba(226, 194, 98, 0.16); color: #f0cf6a; font-weight: 700; }
+.dk-sec a { color: #9fb7e8; text-underline-offset: 3px; }
+
+.dk-foot { margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 13.5px; }
+
+/* эмодзи: превью сразу, анимация Lottie — когда загрузится (docs.js) */
+.dk-emoji { display: grid; place-items: center; }
+.dk-emoji > img, .dk-emoji > span { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+/* ── телефон: навигация лентой сверху, шапка в столбик */
+@media (max-width: 860px) {
+  .dk { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 16px 12px 48px; }
+  .dk-nav { position: static; display: flex; overflow-x: auto; gap: 6px; padding: 8px; border-radius: 20px; scrollbar-width: none; }
+  .dk-nav::-webkit-scrollbar { display: none; }
+  .dk-item { flex: none; grid-template-columns: 34px auto; padding: 8px 12px 8px 8px; }
+  .dk-item .dk-emoji { width: 34px; height: 34px; }
+  .dk-item__text span { display: none; }
+  .dk-doc { padding: 24px 18px 28px; border-radius: 22px; }
+  .dk-head { grid-template-columns: 1fr; gap: 10px; padding-bottom: 22px; }
+  .dk-head .dk-emoji { grid-row: auto; width: 92px; height: 92px; margin: 0; }
+  .dk-sec { padding-top: 24px; }
+  .dk-sec p, .dk-list { margin-left: 0; }
+}

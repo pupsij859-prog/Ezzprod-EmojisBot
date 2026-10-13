@@ -1,6 +1,6 @@
 // Экран сборки пака: прогресс → «пак готов». Сборка идёт на сервере и не зависит от этого экрана.
 import { api } from '../api.js';
-import { Button, CloseButton, GlowIcon, Quote } from '../components.js';
+import { BigEmoji, Button, CloseButton, Quote } from '../components.js';
 import { openOverlay } from '../nav.js';
 import { refreshMe, state } from '../store.js';
 import { goTab } from '../router.js';
@@ -74,7 +74,7 @@ export function openCreating(initial) {
         root.replaceChildren(
           CloseButton(close),
           h('div', { class: 'creating__box creating__box--done' },
-            GlowIcon('sparkle', 'burst'),
+            BigEmoji('party', 'burst'),
             h('h2', { class: 'creating__title' }, 'Пак готов'),
             h('p', { class: 'creating__sub' }, `${pack.title}`),
             h('p', { class: 'creating__meta' }, emojiWord(pack.count, pack.type)),
@@ -85,8 +85,8 @@ export function openCreating(initial) {
               link ? Button({ label: 'Открыть в Telegram', icon: 'share', onClick: () => openLink(link) }) : null,
               Button({ label: 'К моим пакам', variant: 'secondary', onClick: () => {
                 close();
-                goTab('profile');
-                document.getElementById('packs')?.scrollIntoView();
+                goTab('packs');
+                document.getElementById('my-packs')?.scrollIntoView();
               } }))));
       }
 
@@ -97,7 +97,7 @@ export function openCreating(initial) {
         root.replaceChildren(
           CloseButton(close),
           h('div', { class: 'creating__box' },
-            GlowIcon('info'),
+            BigEmoji('sad'),
             h('h2', { class: 'creating__title' }, 'Не получилось'),
             h('p', { class: 'creating__sub' }, 'Генерации вернулись на баланс. Попробуй ещё раз'),
             Button({ label: 'Понятно', onClick: close })));

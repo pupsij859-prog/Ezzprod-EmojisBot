@@ -107,7 +107,7 @@ function openPayment(p, onChanged) {
     render: ({ close }) => {
       const canRefund = p.status === 'credited' || p.status === 'credited_repeat';
       const refund = Button({ label: 'Вернуть Stars', variant: 'secondary', onClick: async () => {
-        if (!(await confirmAction(`Вернуть ${p.amount} ⭐ пользователю ${who(p.user)}? С баланса снимется ${gens(p.qty || 0)}.`))) return;
+        if (!(await confirmAction(`Вернуть ${p.amount} Stars пользователю ${who(p.user)}? С баланса снимется ${gens(p.qty || 0)}.`))) return;
         setBusy(refund, true, 'Возвращаем…');
         try {
           const r = await api.admin.refund(p.charge_id, p.provider);

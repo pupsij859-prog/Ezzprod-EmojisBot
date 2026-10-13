@@ -1,9 +1,11 @@
-// Блок «Мои паки» в профиле: список собранных паков, прогресс сборки, кнопка «открыть».
+// Вкладка «Паки»: собранные пользователем паки (эмодзи или стикеры).
+// Тап по паку открывает его «как в чате Telegram» (views/chat.js).
 import { api, previewUrl } from '../api.js';
-import { Button, ErrorState, Skeleton } from '../components.js';
+import { Button, Chips, ErrorState, SectionHead, Skeleton, Topbar } from '../components.js';
 import { goTab } from '../router.js';
-import { openLink } from '../tg.js';
-import { emojiWord, h, sleep } from '../ui.js';
+import { haptic } from '../tg.js';
+import { emojiWord, h, icon, sleep } from '../ui.js';
+import { openPackChat, userChatPack } from './chat.js';
 
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 
@@ -12,7 +14,7 @@ function dateLabel(ts) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
 
-function PackCard(pack) {
+function MyPackRow(pack) {
   const thumbs = h('div', { class: 'pack__thumbs', 'aria-hidden': 'true' },
     pack.preview.slice(0, 4).map((id) => h('img', { src: previewUrl(id), alt: '', loading: 'lazy', decoding: 'async' })));
   const kind = pack.type === 'sticker' ? 'стикеры' : 'эмодзи';
@@ -23,48 +25,61 @@ function PackCard(pack) {
   } else if (pack.status === 'failed') {
     status = h('span', { class: 'badge badge--error' }, 'не собрался');
   } else {
-    status = pack.link ? Button({ label: 'Открыть', variant: 'secondary', full: false, icon: 'share', onClick: () => openLink(pack.link) }) : null;
+    status = icon('chev-right', 'pcard__chev');
   }
-  return h('li', { class: `pack pack--${pack.status}` },
-    thumbs,
-    h('div', { class: 'pack__info' },
-      h('h3', { class: 'pack__title' }, pack.title),
-      h('p', { class: 'pack__meta' }, `${kind} · ${emojiWord(pack.count, pack.type)} · ${dateLabel(pack.created_at)}`),
-      pack.status === 'processing' ? h('p', { class: 'pack__status' }, 'собирается…') : null),
-    status);
+  const ready = pack.status === 'ready';
+  return h(ready ? 'button' : 'div', {
+    class: `pack pack--${pack.status}`, type: ready ? 'button' : undefined, dataset: { type: pack.type },
+    onclick: ready ? () => { haptic.tap(); openPackChat(userChatPack(pack)); } : undefined,
+  },
+  thumbs,
+  h('div', { class: 'pack__info' },
+    h('h3', { class: 'pack__title' }, pack.title),
+    h('p', { class: 'pack__meta' }, `${kind} · ${emojiWord(pack.count, pack.type)} · ${dateLabel(pack.created_at)}`),
+    pack.status === 'processing' ? h('p', { class: 'pack__status' }, 'собирается…') : null),
+  status);
 }
 
-/** → { el, cleanup } */
-export function PacksSection() {
+export function mountPacks(container) {
   let alive = true;
-  const list = h('ul', { class: 'packs', 'aria-label': 'мои паки' });
-  const box = h('div', { class: 'packs-box' }, ...Array.from({ length: 2 }, () => Skeleton('skeleton--pack')));
+  let filter = 'all';
+  const mineBox = h('div', { class: 'packs-box' }, Skeleton('skeleton--pack'), Skeleton('skeleton--pack'));
+  const mineTitle = h('h3', { class: 'section-title', id: 'my-packs' }, 'Мои паки');
 
-  async function load() {
+  const applyFilter = () => {
+    container.querySelectorAll('[data-type]').forEach((el) => {
+      el.hidden = filter !== 'all' && el.dataset.type !== 'any' && el.dataset.type !== filter;
+    });
+  };
+  const chips = Chips([{ id: 'all', label: 'Все' }, { id: 'emoji', label: 'Эмодзи' }, { id: 'sticker', label: 'Стикеры' }],
+    filter, (id) => { filter = id; applyFilter(); });
+
+  container.append(h('section', { class: 'screen screen--packs' },
+    Topbar(),
+    SectionHead('Паки'),
+    h('div', { class: 'page' }, chips.el, mineTitle, mineBox)));
+
+  async function loadMine() {
     try {
       const { packs } = await api.packs();
       if (!alive) return;
-      paint(packs);
+      if (!packs.length) {
+        mineBox.replaceChildren(h('div', { class: 'packs-empty', dataset: { type: 'any' } },
+          h('p', null, 'Своих паков пока нет. Выбери шаблоны на главной и собери первый'),
+          Button({ label: 'К шаблонам', full: false, onClick: () => goTab('home') })));
+      } else {
+        mineBox.replaceChildren(h('div', { class: 'packs' }, ...packs.map(MyPackRow)));
+      }
+      applyFilter();
       if (packs.some((p) => p.status === 'processing')) {
         await sleep(1200);
-        if (alive) load();
+        if (alive) loadMine();
       }
     } catch {
-      if (alive) box.replaceChildren(ErrorState({ onRetry: load }));
+      if (alive) mineBox.replaceChildren(ErrorState({ onRetry: loadMine }));
     }
   }
 
-  function paint(packs) {
-    if (!packs.length) {
-      box.replaceChildren(h('div', { class: 'packs-empty' },
-        h('p', null, 'Паков пока нет. Выбери эмодзи и собери первый'),
-        Button({ label: 'К эмодзи', full: false, onClick: () => goTab('home') })));
-      return;
-    }
-    list.replaceChildren(...packs.map(PackCard));
-    box.replaceChildren(list);
-  }
-
-  load();
-  return { el: box, cleanup: () => { alive = false; } };
+  loadMine();
+  return () => { alive = false; };
 }

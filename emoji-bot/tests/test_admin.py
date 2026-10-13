@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -100,16 +101,40 @@ def test_stats_and_packs(client):
 
 # ───────────────────────── эмодзи ─────────────────────────
 
-def test_emoji_map_falls_back_without_bot(client):
+def test_emoji_map_has_image_for_every_key_and_no_animation_without_bot(client):
     data = client.get("/api/emoji").json()["emoji"]
-    assert data["gift"] == {"fallback": "🎁", "custom": False}
+    webapp = Path(__file__).resolve().parent.parent / "webapp"
+    for key, info in data.items():
+        src = info["thumb"] or info["svg"]
+        assert src and (webapp / src).is_file(), key  # обычных эмодзи-символов больше нет
+        assert info["custom"] is False
+    assert data["gift"]["id"] and data["gift"]["thumb"].endswith(".webp")
+    assert data["warn"]["svg"] == "assets/emoji/warn.svg"
     assert client.get("/api/emoji/gift").status_code == 404
     assert client.get("/api/emoji/not-a-key").status_code == 404
 
 
+def test_premium_emoji_thumbs_and_id_allowlist(client):
+    from app import premium
+
+    packs = {p["id"]: len(p["items"]) for p in premium.packs()}
+    assert packs == {"finance": 60, "kawaii": 150}
+    webapp = Path(__file__).resolve().parent.parent / "webapp"
+    first = premium.packs()[0]["items"][0]["id"]
+    assert (webapp / premium.thumb(first)).is_file()
+    # известный ID разрешён (без бота файла просто нет), чужой — нет
+    assert client.get(f"/api/emoji/id/{first}").json()["detail"]["code"] == "no_emoji"
+    assert emoji.allowed_id(client.app_state.ctx.settings, first)
+    assert not emoji.allowed_id(client.app_state.ctx.settings, "123456789")
+    assert not emoji.allowed_id(client.app_state.ctx.settings, "../etc")
+    assert client.get("/api/premium").status_code == 404  # списка паков в API больше нет
+
+
 def test_custom_emoji_ids_from_env_are_validated(tmp_path):
     s = make_settings(tmp_path, custom_emoji=(("gift", "123"), ("warn", "abc"), ("nope", "5")))
-    assert emoji.ids(s) == {"gift": "123"}
+    ids = emoji.ids(s)
+    assert ids["gift"] == "123" and "warn" not in ids and "nope" not in ids
+    assert emoji.allowed_id(s, "123")
     assert emoji.public_map(s, bot_ready=True)["gift"]["custom"] is True
     assert emoji.public_map(s, bot_ready=False)["gift"]["custom"] is False
 

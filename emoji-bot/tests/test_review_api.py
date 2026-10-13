@@ -89,9 +89,8 @@ def test_frontend_can_delete_uploaded_logos():
     assert "/logos/" in api and "DELETE" in api
 
 
-@pytest.mark.xfail(strict=True, reason="P1: openCustomize подписывается на bus 6 раз и отписывается только при успешной "
-                                       "отправке; закрытие шторки свайпом/назад оставляет подписки (утечка)")
 def test_customize_sheet_unsubscribes_on_close():
+    """Экран оформления (openOrder) снимает подписки на bus при любом закрытии — через onClose."""
     src = (WEBAPP / "js" / "views" / "customize.js").read_text(encoding="utf-8")
     assert re.search(r"onClose\s*:", src) or re.search(r"onClose\s*[,}]", src)
 

@@ -1,214 +1,196 @@
-// Плавающая панель вкладок с «линзой».
-// Линза — капсула под активной вкладкой. По тапу она перелетает к вкладке на пружине (с лёгким перелётом
-// и растяжением по скорости). Её можно схватить и тащить пальцем: линза «приподнимается», становится
-// стеклянной, иконки под ней прячутся и оживают, когда она уходит. При отпускании линза с учётом инерции
-// прилипает к ближайшей вкладке. Иконка вкладки, на которую приехала линза, проигрывает свою анимацию.
+// Нижняя панель вкладок — плавающая стеклянная капсула, как в новом Telegram (перенесена из соседнего
+// проекта мини-аппа). Плашка ездит за активной вкладкой с пружинкой; её можно тащить пальцем — она
+// меняет ширину между вкладками, иконка под ней оживает, у крайней вкладки плашка вжимается в стенку
+// и отскакивает, когда её отпускают.
+import { TabIcon } from './tabicons.js';
 import { haptic } from './tg.js';
-import { h, icon, prefersReducedMotion } from './ui.js';
+import { h, prefersReducedMotion } from './ui.js';
 
-const PAD = 4;                              // отступ линзы от краёв панели
-const SNAP = { k: 290, zeta: 0.66 };        // перелёт к вкладке: небольшой перелёт и отскок
-const FOLLOW = { k: 1100, zeta: 0.9 };      // следование за пальцем: почти без запаздывания
-const LIFT = { k: 520, zeta: 0.62 };        // «подъём» линзы при захвате
-const DRAG_START = 6;                       // px: дальше этого палец уже тащит, а не тапает
-const FLING = 0.09;                         // с: насколько вперёд учитываем скорость при отпускании
-
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const rubber = (d) => (d * 0.4) / (1 + d / 90); // сопротивление за краями
-
-function springStep(pos, vel, target, { k, zeta }, dt) {
-  const c = 2 * zeta * Math.sqrt(k);
-  const acc = -k * (pos - target) - c * vel;
-  const v = vel + acc * dt;
-  return [pos + v * dt, v];
-}
+const SQUASH_RANGE = 70; // на сколько px утянуть за край, чтобы сплющить плашку до упора
 
 /**
- * tabs: [{ id, label, icon, extra? (Node — например, бейдж) }]
- * onSelect(id) — пользователь выбрал вкладку (тапом или перетаскиванием).
+ * tabs: [{ id, label, icon, extra? }]; onSelect(id) — пользователь выбрал вкладку (тапом или перетаскиванием).
  * → { el, setActive(id, { animate }) }
  */
-export function TabBar({ tabs, active, onSelect }) {
-  const lens = h('div', { class: 'tabbar__lens', 'aria-hidden': 'true' });
-  const buttons = tabs.map((t, i) => h('button', {
-    class: 'tab', type: 'button', role: 'tab', 'aria-label': t.label,
-    dataset: { tab: t.id, icon: t.icon },
-    onclick: () => {
-      if (suppressClick) return;
-      if (i !== index) { haptic.select(); onSelect(t.id); } else { play(i); }
-    },
-  },
-  h('span', { class: 'tab__iconbox' }, icon(t.icon, 'tab__icon'), t.extra || null),
-  h('span', { class: 'tab__label' }, t.label)));
-  const bar = h('nav', { class: 'tabbar', role: 'tablist', 'aria-label': 'разделы', style: { '--n': String(tabs.length) } },
-    lens, ...buttons);
+export function TabBar({ tabs: list, active, onSelect }) {
+  const glass = h('span', { class: 'tab-pill-glass' });
+  const pill = h('span', { class: 'tab-pill', 'aria-hidden': 'true' }, glass);
+  const tabs = list.map((t) => h('button', {
+    class: `tab${t.id === active ? ' is-active' : ''}`, type: 'button', role: 'tab', 'aria-label': t.label,
+    dataset: { tab: t.id },
+  }, TabIcon(t.icon), h('span', null, t.label), t.extra || null));
+  const tabbar = h('nav', { class: `tabbar${tabs.length > 3 ? ' has-4-tabs' : ''}`, role: 'tablist', 'aria-label': 'разделы' },
+    pill, ...tabs);
 
-  // анимация иконки: перезапуск класса
-  buttons.forEach((b) => {
-    const ic = b.querySelector('.tab__icon');
-    ic.addEventListener('animationend', () => ic.classList.remove('is-play'));
+  const reduceMotion = prefersReducedMotion();
+  let current = active;
+  let pillPos = null;
+  let pillAnim = null;
+  let drag = null;
+  let ignoreClickUntil = 0;
+  let skipIcon = false;
+
+  const tabBox = (tab) => ({ center: tab.offsetLeft + tab.offsetWidth / 2, width: tab.offsetWidth });
+  const pillTransform = (center, width) => `translateX(${center - width / 2}px)`;
+  const glassFrame = (x, sx, sy, offset) => ({ transform: `translateX(${x}px) scale(${sx}, ${sy})`, ...(offset && { offset }) });
+
+  function placePill(center, width) {
+    pill.style.top = `${tabs[0].offsetTop}px`;
+    pill.style.height = `${tabs[0].offsetHeight}px`;
+    pill.style.width = `${width}px`;
+    pill.style.transform = pillTransform(center, width);
+    pillPos = { center, width };
+  }
+
+  function pillToTab(name, animate = true) {
+    const index = tabs.findIndex((t) => t.dataset.tab === name);
+    if (index < 0 || !tabs[index].offsetWidth) return;
+    const { center, width } = tabBox(tabs[index]);
+    const from = pillPos;
+    if (pillAnim) pillAnim.cancel();
+    placePill(center, width);
+    if (!animate || !from || reduceMotion) return;
+    const dist = center - from.center;
+    if (Math.abs(dist) < 1) return;
+    const frames = [
+      { transform: pillTransform(from.center, from.width), width: `${from.width}px` },
+      { transform: pillTransform(center, width), width: `${width}px` },
+    ];
+    // к крайней вкладке подъезжает мягко и останавливается у стенки, не стукаясь
+    // (о стенку плашка бьётся, только когда её дотащили туда пальцем — см. squash); к средней — с пружинкой
+    const towardWall = (index === 0 && dist < 0) || (index === tabs.length - 1 && dist > 0);
+    const easing = towardWall ? 'cubic-bezier(0.22, 1, 0.36, 1)' : 'cubic-bezier(0.32, 1.32, 0.5, 1)';
+    pillAnim = pill.animate(frames, { duration: 520, easing });
+  }
+
+  // положение пальца → центр и ширина плашки; за крайними вкладками она упирается в стенку (over — насколько тянем дальше)
+  function pillAt(x) {
+    const boxes = tabs.map(tabBox);
+    const first = boxes[0];
+    const last = boxes[boxes.length - 1];
+    if (x < first.center) return { center: first.center, width: first.width, index: 0, over: x - first.center };
+    if (x > last.center) return { center: last.center, width: last.width, index: boxes.length - 1, over: x - last.center };
+    const k = Math.max(0, boxes.findIndex((b, i) => i < boxes.length - 1 && x <= boxes[i + 1].center));
+    const a = boxes[k];
+    const b = boxes[k + 1] || a;
+    const t = b === a ? 0 : (x - a.center) / (b.center - a.center);
+    return { center: x, width: a.width + (b.width - a.width) * t, index: t < 0.5 ? k : k + 1, over: 0 };
+  }
+
+  // пока тянем за край — плашка вжимается в стенку тем сильнее, чем дальше палец
+  function squash(over) {
+    if (!over) {
+      if (drag.squash) {
+        drag.squash = null;
+        glass.style.transform = '';
+        glass.style.transformOrigin = '';
+        tabbar.classList.remove('is-squashing');
+      }
+      return;
+    }
+    const side = over < 0 ? 'left' : 'right';
+    if (drag.squash !== side) {
+      tabbar.classList.add('is-squashing');
+      haptic.rigid();
+    }
+    drag.squash = side;
+    const k = Math.min(1, Math.abs(over) / SQUASH_RANGE);
+    glass.style.transformOrigin = `${side} center`;
+    glass.style.transform = `translateX(${Math.sign(over) * 2 * k}px) scale(${1.07 - 0.35 * k}, ${1.07 + 0.08 * k})`;
+  }
+
+  // отпустили сплющенную плашку — она отскакивает от стенки
+  function unsquash() {
+    const from = glass.style.transform;
+    glass.style.transform = '';
+    tabbar.classList.remove('is-squashing');
+    if (reduceMotion) { glass.style.transformOrigin = ''; return; }
+    glass.animate(
+      [{ transform: from }, glassFrame(0, 1.09, 0.92, 0.32), glassFrame(0, 0.97, 1.03, 0.62), glassFrame(0, 1, 1)],
+      { duration: 520, easing: 'ease-out' },
+    ).onfinish = () => { glass.style.transformOrigin = ''; };
+  }
+
+  // анимация иконки вкладки (сами анимации — в components.css, класс is-playing)
+  function playIcon(name) {
+    const tab = tabs.find((t) => t.dataset.tab === name);
+    if (!tab || reduceMotion) return;
+    tab.classList.remove('is-playing');
+    void tab.offsetWidth; // перезапуск CSS-анимации
+    tab.classList.add('is-playing');
+  }
+
+  tabbar.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const index = tabs.findIndex((t) => t.dataset.tab === current);
+    drag = { id: e.pointerId, startX: e.clientX, active: false, squash: null, index };
   });
-  function play(i) {
-    if (prefersReducedMotion()) return;
-    const ic = buttons[i].querySelector('.tab__icon');
-    ic.classList.remove('is-play');
-    void ic.getBoundingClientRect();
-    ic.classList.add('is-play');
+
+  tabbar.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.active) {
+      if (Math.abs(e.clientX - drag.startX) < 6) return;
+      drag.active = true;
+      if (pillAnim) pillAnim.cancel();
+      try { tabbar.setPointerCapture(e.pointerId); } catch {}
+      tabbar.classList.add('is-dragging');
+      tabs[drag.index].classList.add('is-near');
+    }
+    const { center, width, index, over } = pillAt(e.clientX - tabbar.getBoundingClientRect().left);
+    placePill(center, width);
+    squash(over);
+    if (index !== drag.index) {
+      tabs[drag.index].classList.remove('is-near');
+      tabs[index].classList.add('is-near');
+      drag.index = index;
+      playIcon(tabs[index].dataset.tab); // иконка оживает, когда плашка наезжает на неё
+      haptic.select();
+    }
+  });
+
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    const { active: moved, index, squash: squashed } = drag;
+    drag = null;
+    if (!moved) return; // обычное нажатие — его обработает click
+    ignoreClickUntil = performance.now() + 400;
+    tabbar.classList.remove('is-dragging');
+    tabs.forEach((t) => t.classList.remove('is-near'));
+    if (squashed) unsquash();
+    const name = tabs[index].dataset.tab;
+    if (name === current) pillToTab(name);
+    else { skipIcon = true; onSelect(name); } // иконка уже сыграла, когда плашка на неё наехала
   }
+  tabbar.addEventListener('pointerup', endDrag);
+  tabbar.addEventListener('pointercancel', endDrag);
 
-  let index = Math.max(0, tabs.findIndex((t) => t.id === active));
-  let x = 0; let v = 0; let target = 0;
-  let lift = 0; let liftV = 0; let liftTarget = 0;
-  let mode = SNAP;
-  let raf = 0; let last = 0;
-  let landed = true;            // активная иконка уже «ожила» после прилёта
-  let drag = null;              // { id, startX, moved }
-  let suppressClick = false;
-  let lit = -1;
-  const under = new Set();
-
-  const tabW = () => (bar.clientWidth - PAD * 2) / tabs.length;
-  const xFor = (i) => PAD + i * tabW();
-  const indexAt = (pos) => clamp(Math.round((pos - PAD) / tabW()), 0, tabs.length - 1);
-
-  function render() {
-    const speed = Math.abs(v);
-    const stretch = Math.min(speed / 3400, 0.18);
-    const grow = 1 + lift * 0.12;
-    // у краёв линза не вылезает за панель: перелёт превращается в сплющивание
-    const min = PAD;
-    const max = bar.clientWidth - PAD - tabW();
-    const over = x < min ? min - x : x > max ? x - max : 0;
-    const vx = x < min ? min - over * 0.2 : x > max ? max + over * 0.2 : x;
-    const squash = Math.min(over / 60, 0.12);
-    const sx = grow * (1 + stretch - squash);
-    const sy = grow * (1 - stretch * 0.45 + squash * 0.5);
-    lens.style.transform = `translate3d(${vx.toFixed(2)}px,0,0) scale(${sx.toFixed(4)},${sy.toFixed(4)})`;
-    bar.classList.toggle('is-moving', speed > 40 || lift > 0.05);
-    bar.classList.toggle('is-lifted', lift > 0.35);
-
-    // подпись под линзой подсвечивается, пока линза в движении
-    const i = indexAt(x);
-    if (i !== lit) {
-      lit = i;
-      buttons.forEach((b, j) => b.classList.toggle('is-lit', j === i));
-      if (drag && drag.moved) haptic.select();
-    }
-
-    // иконки под приподнятой линзой прячутся и «оживают», когда она уходит
-    const w = tabW();
-    buttons.forEach((b, j) => {
-      const covered = lift > 0.3 && Math.abs(xFor(j) - x) < w * 0.42;
-      if (covered && !under.has(j)) { under.add(j); b.classList.add('is-under'); }
-      else if (!covered && under.has(j)) { under.delete(j); b.classList.remove('is-under'); play(j); }
-    });
-
-    // прилёт: активная иконка оживает, как только линза почти на месте
-    if (!landed && !drag && Math.abs(x - target) < w * 0.22) {
-      landed = true;
-      if (!under.has(index)) play(index);
-    }
-  }
-
-  function frame(now) {
-    const dt = Math.min(0.034, (now - last) / 1000 || 0.016);
-    last = now;
-    for (let s = 0; s < 2; s += 1) { // два полушага: устойчиво даже при просадке fps
-      [x, v] = springStep(x, v, target, mode, dt / 2);
-      [lift, liftV] = springStep(lift, liftV, liftTarget, LIFT, dt / 2);
-    }
-    const resting = !drag && Math.abs(x - target) < 0.3 && Math.abs(v) < 6
-      && Math.abs(lift - liftTarget) < 0.003 && Math.abs(liftV) < 0.02;
-    if (resting) {
-      x = target; v = 0; lift = liftTarget; liftV = 0;
-      render();
-      raf = 0;
-      return;
-    }
-    render();
-    raf = requestAnimationFrame(frame);
-  }
-
-  function kick() {
-    if (prefersReducedMotion()) {
-      x = target; v = 0; lift = liftTarget; liftV = 0;
-      render();
-      return;
-    }
-    if (!raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
-  }
+  tabbar.addEventListener('click', (e) => {
+    if (performance.now() < ignoreClickUntil) return;
+    const tab = e.target.closest('.tab');
+    if (!tab) return;
+    if (tab.dataset.tab === current) playIcon(current);
+    else { haptic.select(); onSelect(tab.dataset.tab); }
+  });
 
   function setActive(id, { animate = true } = {}) {
-    const i = tabs.findIndex((t) => t.id === id);
-    if (i < 0) return;
-    const changed = i !== index;
-    index = i;
-    buttons.forEach((b, j) => {
-      b.classList.toggle('is-active', j === i);
-      b.setAttribute('aria-selected', String(j === i));
+    const icon = !skipIcon;
+    skipIcon = false;
+    if (!tabs.some((t) => t.dataset.tab === id)) return;
+    const changed = id !== current;
+    current = id;
+    tabs.forEach((t) => {
+      const on = t.dataset.tab === id;
+      t.classList.toggle('is-active', on);
+      t.setAttribute('aria-selected', String(on));
     });
-    mode = SNAP;
-    target = xFor(i);
-    if (!animate || !bar.isConnected) {
-      x = target; v = 0;
-      render();
-      return;
-    }
-    if (changed) landed = false;
-    kick();
+    pillToTab(id, animate && changed);
+    if (changed && icon) playIcon(id);
   }
 
-  // ── перетаскивание линзы
-  bar.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    suppressClick = false;
-    drag = { id: e.pointerId, startX: e.clientX, moved: false };
-  });
-  bar.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    if (!drag.moved) {
-      if (Math.abs(e.clientX - drag.startX) < DRAG_START) return;
-      drag.moved = true;
-      try { bar.setPointerCapture(e.pointerId); } catch {}
-      mode = FOLLOW;
-      liftTarget = 1;
-      haptic.tap();
-    }
-    const rect = bar.getBoundingClientRect();
-    const w = tabW();
-    const min = PAD;
-    const max = rect.width - PAD - w;
-    let tx = e.clientX - rect.left - w / 2;
-    if (tx < min) tx = min - rubber(min - tx);
-    if (tx > max) tx = max + rubber(tx - max);
-    target = tx;
-    kick();
-  });
-  const release = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const moved = drag.moved;
-    drag = null;
-    if (!moved) return; // обычный тап — его обработает click
-    suppressClick = true;
-    setTimeout(() => { suppressClick = false; }, 60);
-    liftTarget = 0;
-    mode = SNAP;
-    const i = indexAt(x + v * FLING);
-    target = xFor(i);
-    landed = false;
-    kick();
-    if (i !== index) onSelect(tabs[i].id);
-    else play(i);
-  };
-  bar.addEventListener('pointerup', release);
-  bar.addEventListener('pointercancel', release);
-  bar.addEventListener('lostpointercapture', release);
+  // первая расстановка без анимации; дальше следим за шрифтами и размером экрана
+  new ResizeObserver(() => { if (!drag || !drag.active) pillToTab(current, false); }).observe(tabbar);
+  if (document.fonts) document.fonts.ready.then(() => pillToTab(current, false));
+  setTimeout(() => playIcon(current), 450);
 
-  // пересчёт позиции при изменении ширины (поворот, ресайз окна)
-  if (window.ResizeObserver) {
-    new ResizeObserver(() => { if (!raf && !drag) { target = xFor(index); x = target; render(); } }).observe(bar);
-  }
-
-  requestAnimationFrame(() => setActive(tabs[index].id, { animate: false }));
-  return { el: bar, setActive };
+  return { el: tabbar, setActive };
 }

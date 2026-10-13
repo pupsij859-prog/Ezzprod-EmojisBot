@@ -1,4 +1,14 @@
 import { authHeaders } from './tg.js';
+import { toast } from './ui.js';
+
+// Сервер пропал (сеть или туннель сменил адрес и старый больше не отвечает): подсказываем, что делать.
+// Свой бэкенд отвечает JSON, а 502 без JSON отдаёт уже туннель.
+let staleShown = 0;
+function serverGone() {
+  if (Date.now() - staleShown < 30000) return;
+  staleShown = Date.now();
+  toast('Нет связи с ботом. Закрой приложение и открой заново из бота', 'warn');
+}
 
 export class ApiError extends Error {
   constructor(status, detail) {
@@ -24,10 +34,12 @@ async function request(method, path, body, { form = false, headers: extra = {} }
   try {
     res = await fetch(`/api${path}`, init);
   } catch {
+    serverGone();
     throw new ApiError(0, { code: 'network' });
   }
   let data = null;
   try { data = await res.json(); } catch {}
+  if (!res.ok && data === null && res.status >= 502) serverGone();
   if (!res.ok) {
     const detail = data && data.detail;
     throw new ApiError(res.status, typeof detail === 'object' && detail ? detail : { code: `http_${res.status}` });
@@ -54,9 +66,9 @@ export const api = {
   styles: () => request('GET', '/styles'),
   addStyle: (body) => request('POST', '/styles', body),
   deleteStyle: (id) => request('DELETE', `/styles/${id}`),
-  invoice: (qty) => request('POST', '/billing/invoice', { qty }),
+  invoice: (qty, method = 'stars') => request('POST', '/billing/invoice', { qty, method }),
   paymentStatus: (id) => request('GET', `/billing/payments/${id}`),
-  devPay: (qty) => request('POST', '/dev/pay', { qty }),
+  devPay: (qty, method = 'stars') => request('POST', '/dev/pay', { qty, method }),
   referral: () => request('GET', '/referral'),
   emoji: () => request('GET', '/emoji'),
   admin: {

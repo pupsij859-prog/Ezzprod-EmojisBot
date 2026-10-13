@@ -19,7 +19,7 @@ export const state = {
   me: null,
   pricing: null,
   categories: [],
-  emoji: {}, // ключ → { fallback, custom }
+  emoji: {}, // ключ → { id, thumb, svg, custom }
   tab: 'home',
   category: 'classic',
   page: 1,

@@ -70,6 +70,7 @@ export function closeApp() {
 // ── haptics (беззвучно игнорируем, если не поддерживается)
 export const haptic = {
   tap() { try { WA.HapticFeedback.impactOccurred('light'); } catch {} },
+  rigid() { try { WA.HapticFeedback.impactOccurred('rigid'); } catch {} },
   select() { try { WA.HapticFeedback.selectionChanged(); } catch {} },
   success() { try { WA.HapticFeedback.notificationOccurred('success'); } catch {} },
   error() { try { WA.HapticFeedback.notificationOccurred('error'); } catch {} },
@@ -94,6 +95,23 @@ export function openInvoice(url) {
     if (!WA || !inTelegram || !atLeast('6.1')) return resolve('unsupported');
     try { WA.openInvoice(url, (status) => resolve(status)); } catch { resolve('failed'); }
   });
+}
+
+// ── облачное хранилище Telegram (на всех устройствах пользователя); вне Telegram — localStorage
+export function cloudGet(key) {
+  return new Promise((resolve) => {
+    if (WA && inTelegram && atLeast('6.9')) {
+      try { WA.CloudStorage.getItem(key, (err, value) => resolve(err ? null : value || null)); return; } catch {}
+    }
+    try { resolve(localStorage.getItem(`ez.cloud.${key}`)); } catch { resolve(null); }
+  });
+}
+
+export function cloudSet(key, value) {
+  if (WA && inTelegram && atLeast('6.9')) {
+    try { WA.CloudStorage.setItem(key, value); return; } catch {}
+  }
+  try { localStorage.setItem(`ez.cloud.${key}`, value); } catch {}
 }
 
 /** Подтверждение действия: нативный диалог Telegram, вне Telegram — confirm браузера. */

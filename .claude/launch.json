@@ -7,9 +7,9 @@
       "runtimeArgs": [
         "-NoProfile",
         "-Command",
-        "Set-Location -LiteralPath (Join-Path (Get-Location) 'emoji-bot');$env:DEV_MODE='1'; $env:ADMIN_IDS='1001';$env:BOT_TOKEN=''; $env:WEBAPP_URL=''; $env:ENV_FILE=\"$env:TEMP\\ezzprod-none.env\"; $env:DATA_DIR=\"$env:TEMP\\ezzprod-dev\"; & \"$env:LOCALAPPDATA\\emoji-bot-venv\\Scripts\\python.exe\" -m app"
+        "Set-Location -LiteralPath (Join-Path (Get-Location) 'emoji-bot');$env:DEV_MODE='1'; $env:ADMIN_IDS='1001'; $env:PORT='8001';$env:BOT_TOKEN=''; $env:WEBAPP_URL=''; $env:ENV_FILE=\"$env:TEMP\\ezzprod-none.env\"; $env:DATA_DIR=\"$env:TEMP\\ezzprod-dev\"; & \"$env:LOCALAPPDATA\\emoji-bot-venv\\Scripts\\python.exe\" -m app"
       ],
-      "port": 8000
+      "port": 8001
     }
   ]
 }

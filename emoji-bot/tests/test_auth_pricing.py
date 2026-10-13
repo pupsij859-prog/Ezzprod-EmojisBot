@@ -46,11 +46,13 @@ def test_start_param_is_whitelisted():
 
 def test_pricing_tiers(tmp_path):
     s = make_settings(tmp_path)  # 6 ⭐ база, −10% от 30, 5 ⭐ от 50
-    assert pricing.quote(s, 1).total == 6
-    assert pricing.quote(s, 20).total == 120
-    assert pricing.quote(s, 30).total == 162          # 180 − 10%
-    assert pricing.quote(s, 50).total == 250
-    assert pricing.quote(s, 50).discount_pct == 17
+    assert pricing.quote(s, 1).total == 5
+    assert pricing.quote(s, 20).total == 100
+    assert pricing.quote(s, 30).total == 135          # 150 − 10%
+    assert pricing.quote(s, 50).total == 200          # по 4 ₽
+    assert pricing.quote(s, 50).discount_pct == 20
+    assert pricing.quote(s, 20).stars == 80           # 100 ₽ / 1,25
+    assert pricing.quote(s, 1).stars == 4             # 5 ₽ / 1,25
     with pytest.raises(ValueError):
         pricing.quote(s, 0)
 
@@ -61,7 +63,7 @@ def test_pricing_is_monotonic(tmp_path):
     totals = [pricing.quote(s, q).total for q in range(1, s.max_buy_qty + 1)]
     assert all(a <= b for a, b in zip(totals, totals[1:]))
     # там, где «сырая» цена ломала монотонность, действует цена большего пакета
-    assert pricing.quote(s, 29).total == 162 and pricing.quote(s, 49).total == 250
+    assert pricing.quote(s, 29).total == 135 and pricing.quote(s, 49).total == 200
 
 
 def test_pricing_table_matches_quote(tmp_path):

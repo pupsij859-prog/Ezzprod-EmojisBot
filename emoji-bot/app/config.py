@@ -106,11 +106,12 @@ class Settings:
 
     # экономика
     signup_gens: int = 1            # подарок новичку
-    stars_per_gen: int = 6          # цена одной генерации в Stars
+    price_rub: int = 5              # цена одной генерации в рублях
     bulk_discount_from: int = 30    # от скольки штук скидка
     bulk_discount_pct: int = 10
     bulk_unit_from: int = 50        # от скольки штук фиксированная цена
-    bulk_unit_stars: int = 5
+    bulk_unit_rub: int = 4          # цена за штуку от bulk_unit_from, ₽
+    rub_per_star: float = 1.25      # курс для оплаты Звёздами: 1 ⭐ = столько ₽
     max_buy_qty: int = 500
     pro_min_purchased: int = 20     # сколько генераций надо купить суммарно, чтобы открылся pro
     referral_reward: int = 3
@@ -164,11 +165,12 @@ class Settings:
             port=_int("PORT", 8000),
             data_dir=Path(_str("DATA_DIR")) if _str("DATA_DIR") else app_data_dir(),
             signup_gens=_int("SIGNUP_GENS", 1),
-            stars_per_gen=_int("STARS_PER_GEN", 6),
+            price_rub=_int("PRICE_RUB", 5),
             bulk_discount_from=_int("BULK_DISCOUNT_FROM", 30),
             bulk_discount_pct=_int("BULK_DISCOUNT_PCT", 10),
             bulk_unit_from=_int("BULK_UNIT_FROM", 50),
-            bulk_unit_stars=_int("BULK_UNIT_STARS", 5),
+            bulk_unit_rub=_int("BULK_UNIT_RUB", 4),
+            rub_per_star=float(_str("RUB_PER_STAR", "1.25") or 1.25),
             pro_min_purchased=_int("PRO_MIN_PURCHASED", 20),
             referral_reward=_int("REFERRAL_REWARD", 3),
             referral_daily_cap=_int("REFERRAL_DAILY_CAP", 10),

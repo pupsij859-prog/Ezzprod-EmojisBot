@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { Button, CloseButton, ErrorState, Quote, Skeleton } from '../components.js';
+import { TgEmoji } from '../emoji.js';
 import { openOverlay } from '../nav.js';
 import { state } from '../store.js';
 import { copyText, haptic, shareLink } from '../tg.js';
@@ -34,7 +35,7 @@ export function openReferral() {
         };
         body.replaceChildren(
           h('div', { class: 'hero-card' },
-            h('span', { class: 'hero-card__emoji', 'aria-hidden': 'true' }, '🤝'),
+            h('span', { class: 'hero-card__emoji' }, TgEmoji('friends')),
             h('div', { class: 'hero-card__num' }, String(r.reward)),
             h('h1', { class: 'hero-card__title' }, `${word} за друга`)),
           Quote({ emoji: 'friends', title: 'Как получить',

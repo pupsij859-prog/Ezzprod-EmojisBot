@@ -1,9 +1,11 @@
-"""Кастомные эмодзи Telegram для текстовых блоков-цитат Mini App.
+"""Эмодзи в текстовых блоках-цитатах Mini App: премиум-эмодзи Telegram и рисованные SVG.
 
-Клиент знает только ключи («gift», «warn»…). Для каждого ключа есть обычный эмодзи-заглушка и, если задан,
-custom_emoji_id. Файл эмодзи бот один раз скачивает через Bot API (getCustomEmojiStickers → getFile)
-и кладёт в папку данных; дальше отдаём с диска. Публичная ручка отдаёт только ключи из этого списка,
-поэтому через неё нельзя заставить бота ходить в Telegram за произвольными ID.
+Клиент знает только ключи («gift», «warn»…). Для ключа есть либо премиум-эмодзи (custom_emoji_id из
+app/data/premium_packs.json: сразу показываем его превью WebP, а анимированную версию бот один раз скачивает
+через Bot API и кладёт в папку данных), либо рисованный SVG из webapp/assets/emoji. Обычные эмодзи-символы
+не используются: на разных системах они выглядят по-разному.
+Публичные ручки отдают файлы только для известных ключей и ID премиум-паков, поэтому через них нельзя
+заставить бота ходить в Telegram за произвольными ID.
 """
 from __future__ import annotations
 
@@ -15,21 +17,37 @@ import time
 import zlib
 from pathlib import Path
 
+from . import premium
 from .config import Settings
 
 log = logging.getLogger("ezzprod.emoji")
 
-# ключ → обычный эмодзи, который показывается, пока нет ID (или бот не запущен)
-FALLBACK: dict[str, str] = {
-    "sparkle": "✨", "palette": "🎨", "gift": "🎁", "box": "📦", "friends": "🤝", "crown": "👑",
+# ключ → обычный эмодзи (только подпись для читалок экрана, на экран не выводится)
+KEYS: dict[str, str] = {
+    "sparkle": "✨", "palette": "🎨", "gift": "🎁", "box": "📤", "friends": "🤝", "crown": "👑",
     "star": "⭐", "warn": "⚠️", "info": "💡", "lock": "🔒", "test": "🧪", "rocket": "🚀",
-    "chart": "📊", "money": "💰", "users": "👥", "check": "✅", "clock": "⏳", "pin": "📌",
-    "hand": "👆", "phone": "📱", "fire": "🔥",
+    "chart": "📊", "money": "💰", "users": "👥", "check": "✅", "clock": "⏱", "pin": "✍️",
+    "hand": "☝️", "phone": "📱", "fire": "🔥", "heart": "❤️", "card": "💳",
+    "gem": "💎", "oops": "🥲", "party": "🥳", "sad": "😢", "bag": "🛍", "heart_hands": "🫶",
+    "cart": "🛒",
 }
 
-# ключ → custom_emoji_id (узнать ID: переслать сообщение с эмодзи боту @idstickerbot).
-# Пустая строка — показываем обычный эмодзи. Переменная CUSTOM_EMOJI в .env дополняет и перекрывает этот список.
-IDS: dict[str, str] = {key: "" for key in FALLBACK}
+# ключ → custom_emoji_id премиум-эмодзи (паки Finance Emoji и Kawaii Emoji).
+# Переменная CUSTOM_EMOJI в .env дополняет и перекрывает этот список.
+IDS: dict[str, str] = {
+    "sparkle": "5463297803235113601", "gift": "5203996991054432397", "box": "5445355530111437729",
+    "friends": "5395732581780040886", "crown": "5431505596316665041", "star": "5267500801240092311",
+    "info": "5262844652964303985", "rocket": "5195033767969839232", "chart": "5190806721286657692",
+    "money": "5287231198098117669", "clock": "5382194935057372936", "pin": "5197269100878907942",
+    "hand": "5389062952835886404", "fire": "5389038097860144794", "heart": "5267102644886853973",
+    "card": "5445353829304387411",
+    "gem": "5235630047959727475", "oops": "5294541369874851363", "party": "5328273248448686763",
+    "sad": "5391310895768936514", "bag": "5294167145079395967", "heart_hands": "5397890811436213746",
+    "cart": "5400090058030075645",
+}
+
+# ключи, для которых нарисован webapp/assets/emoji/<ключ>.svg (нет пары в премиум-паках)
+SVG: frozenset[str] = frozenset({"palette", "warn", "lock", "test", "users", "check", "phone", "cart"})
 
 ID_RE = re.compile(r"^\d{1,24}$")
 MAX_BYTES = 2 * 1024 * 1024      # распакованный TGS бывает до ~1 МБ, видео-эмодзи до 256 КБ
@@ -40,13 +58,28 @@ MEDIA_TYPES = {"json": "application/json", "webm": "video/webm", "webp": "image/
 
 def ids(settings: Settings) -> dict[str, str]:
     merged = {**IDS, **dict(settings.custom_emoji)}
-    return {k: v for k, v in merged.items() if k in FALLBACK and ID_RE.match(v or "")}
+    return {k: v for k, v in merged.items() if k in KEYS and ID_RE.match(v or "")}
+
+
+def allowed_id(settings: Settings, emoji_id: str) -> bool:
+    """Анимацию отдаём только для премиум-паков и ID, назначенных ключам."""
+    return bool(ID_RE.match(emoji_id)) and (premium.known(emoji_id) or emoji_id in ids(settings).values())
 
 
 def public_map(settings: Settings, bot_ready: bool) -> dict[str, dict]:
-    """Что отдаём клиенту: заглушку и признак «есть кастомный» для каждого ключа."""
-    custom = ids(settings) if bot_ready else {}
-    return {k: {"fallback": fb, "custom": k in custom} for k, fb in FALLBACK.items()}
+    """Для каждого ключа: id (если есть), превью WebP или SVG и признак «можно анимировать»."""
+    by_key = ids(settings)
+    out = {}
+    for key, alt in KEYS.items():
+        emoji_id = by_key.get(key)
+        out[key] = {
+            "alt": alt,
+            "id": emoji_id,
+            "thumb": premium.thumb(emoji_id) if emoji_id else None,
+            "svg": f"assets/emoji/{key}.svg" if key in SVG else None,
+            "custom": bool(emoji_id) and bot_ready,
+        }
+    return out
 
 
 class EmojiStore:

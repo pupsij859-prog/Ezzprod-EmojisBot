@@ -1,7 +1,9 @@
-// Вкладка «Заказать»: выбранные эмодзи, тип пака, персонализация, цвета и создание пака.
+// Экран «Оформление»: баннер на голубом CRT Warp (как на главной), выбранные эмодзи, тип пака,
+// персонализация, цвета и создание пака.
 import { api, ApiError, newIdempotencyKey, previewUrl } from '../api.js';
-import { Button, GlowIcon, Group, Quote, Row, SectionHead, SectionTitle, setBusy, Topbar } from '../components.js';
-import { goTab } from '../router.js';
+import { mountCrtWarp } from '../crt.js';
+import { BigEmoji, Button, Group, Quote, Row, SectionTitle, setBusy } from '../components.js';
+import { openOverlay } from '../nav.js';
 import { bus, clearSelection, refreshMe, setPersonalization, setType, state, toggleSelection } from '../store.js';
 import { haptic, tgUser } from '../tg.js';
 import { emojiWord, gens, h, icon, toast } from '../ui.js';
@@ -52,8 +54,8 @@ function ColorRow(label, key, ring) {
     h('span', { class: 'row__main' }, h('span', { class: 'row__label' }, label)), hex, swatch);
 }
 
-// ── лента выбранных: тап по крестику убирает шаблон
-function PickedStrip() {
+// ── лента выбранных: тап по крестику убирает шаблон, «+» возвращает к шаблонам
+function PickedStrip(close) {
   const strip = h('div', { class: 'strip', role: 'list', 'aria-label': 'выбранные шаблоны' });
   const paint = () => {
     strip.replaceChildren(
@@ -62,23 +64,65 @@ function PickedStrip() {
         h('span', { class: 'tcard__text', 'aria-hidden': 'true' }, state.text),
         h('button', { class: 'strip__del', type: 'button', 'aria-label': 'убрать', onclick: () => { haptic.select(); toggleSelection(id); } },
           icon('close')))),
-      h('button', { class: 'strip__add', type: 'button', 'aria-label': 'добавить ещё', onclick: () => { haptic.tap(); goTab('home'); } },
+      h('button', { class: 'strip__add', type: 'button', 'aria-label': 'добавить ещё', onclick: () => { haptic.tap(); close(); } },
         icon('plus')));
   };
   paint();
   return { el: strip, paint };
 }
 
-function EmptyOrder() {
+function EmptyOrder(close) {
   return h('div', { class: 'empty' },
-    GlowIcon('bag'),
+    BigEmoji('bag'),
     h('h2', { class: 'empty__title' }, 'Пока ничего не выбрано'),
-    h('p', { class: 'empty__text' }, 'Открой категорию на главной и отметь эмодзи, которые хочешь в свой пак'),
-    Button({ label: 'К эмодзи', full: false, onClick: () => goTab('home') }));
+    h('p', { class: 'empty__text' }, 'Отметь на главной шаблоны, которые хочешь в свой пак'),
+    Button({ label: 'К шаблонам', full: false, onClick: close }));
 }
 
-export function mountOrder(container) {
+/** Экран оформления заказа (открывается плашкой «Оформить» над нижней панелью). */
+export function openOrder() {
+  let cleanup = () => {};
+  openOverlay({
+    kind: 'screen',
+    label: 'заказ',
+    className: 'layer--order',
+    onClose: () => cleanup(),
+    render: ({ close }) => {
+      const box = h('div', { class: 'order' });
+      cleanup = mountOrder(box, close);
+      return box;
+    },
+  });
+}
+
+/** Баннер оформления: CRT Warp, баланс, заголовок, сколько спишется и 🎁 справа. */
+function OrderHero() {
+  const fx = h('div', { class: 'hero__fx', 'aria-hidden': 'true' });
+  const balance = h('span', null);
+  const sub = h('p', { class: 'ohero__sub' });
+  const el = h('section', { class: 'hero ohero' }, fx,
+    h('div', { class: 'ohero__text' },
+      h('span', { class: 'ohero__chip' }, icon('sparkle-fill', 'ohero__spark'), 'На балансе ', balance),
+      h('h2', { class: 'hero__title ohero__title' }, h('span', null, 'Собери'), h('span', null, 'свой пак')),
+      sub),
+    BigEmoji('gift', 'ohero__emoji'));
+  let stop = () => {};
+  return {
+    el,
+    paint() {
+      const n = state.selection.length;
+      balance.textContent = String(state.me.balance);
+      sub.textContent = n ? `${emojiWord(n, state.type)} · спишется ${gens(n)}` : 'выбери шаблоны на главной';
+    },
+    start() { stop(); stop = mountCrtWarp(fx); },
+    stop() { stop(); stop = () => {}; },
+  };
+}
+
+function mountOrder(container, close) {
   const offs = [];
+  const hero = OrderHero();
+  offs.push(() => hero.stop());
   const root = h('section', { class: 'screen screen--order' });
   container.append(root);
 
@@ -90,29 +134,36 @@ export function mountOrder(container) {
 
   let parts = null; // элементы формы, пока выбор не пуст
   const render = () => {
-    const head = [Topbar(), SectionHead('Заказать')];
+    const head = [h('header', { class: 'ohead' },
+      h('button', { class: 'back-btn', type: 'button', 'aria-label': 'назад', onclick: () => { haptic.tap(); close(); } }, icon('chev-left')),
+      h('h1', { class: 'ohead__title' }, 'Оформление'),
+      h('span', { 'aria-hidden': 'true' }))];
+    const top = h('div', { class: 'page ohero-wrap' }, hero.el);
+    hero.paint();
     if (!state.selection.length) {
       parts = null;
-      root.replaceChildren(...head, EmptyOrder());
-      return;
+      root.replaceChildren(...head, top, EmptyOrder(close));
+    } else {
+      parts = buildForm();
+      root.replaceChildren(...head, top, parts.el);
     }
-    parts = buildForm();
-    root.replaceChildren(...head, parts.el);
+    requestAnimationFrame(() => { if (hero.el.isConnected) hero.start(); });
   };
 
   offs.push(bus.on('selection', () => {
     if (!state.selection.length || !parts) { render(); return; }
     parts.paintSelection();
   }));
-  offs.push(bus.on('type', () => parts && parts.paintFooter()));
-  offs.push(bus.on('me', () => parts && parts.paintFooter()));
+  offs.push(bus.on('selection', () => hero.paint()));
+  offs.push(bus.on('type', () => { hero.paint(); if (parts) parts.paintFooter(); }));
+  offs.push(bus.on('me', () => { hero.paint(); if (parts) parts.paintFooter(); }));
   offs.push(bus.on('personalization', () => parts && parts.paintText()));
 
   function buildForm() {
     const limits = state.me.limits;
 
     // ── выбранные
-    const strip = PickedStrip();
+    const strip = PickedStrip(close);
     const pickedTitle = h('b');
     const picked = h('div', { class: 'card order__picked' },
       h('div', { class: 'order__picked-head' }, pickedTitle,
@@ -120,7 +171,7 @@ export function mountOrder(container) {
       strip.el);
 
     // ── тип пака
-    const seg = Segmented([{ id: 'emoji', label: 'Эмодзи' }, { id: 'sticker', label: 'Стикеры' }], state.type, setType);
+    const seg = Segmented([{ id: 'emoji', label: 'Эмодзи' }, { id: 'sticker', label: 'Стикер' }], state.type, setType);
 
     // ── текст
     const text = h('input', {
@@ -243,6 +294,7 @@ export function mountOrder(container) {
           stroke: state.stroke,
         }, idemKey);
         haptic.success();
+        close();
         clearSelection();
         refreshMe().catch(() => {});
         openCreating(pack);
@@ -261,7 +313,7 @@ export function mountOrder(container) {
     }
 
     paintFooter();
-    const el = h('div', { class: 'page' },
+    const el = h('div', { class: 'page order-form' },
       picked,
       SectionTitle('Тип пака'), seg.el, premiumNote,
       SectionTitle('Персонализация'),

@@ -4,33 +4,69 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>условия покупки</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; background: #0b111b; color: #e6edf7; font: 16px/1.55 Inter, system-ui, sans-serif; }
-    main { max-width: 640px; margin: 0 auto; padding: 32px 20px 64px; }
-    h1 { font-size: 24px; margin: 0 0 8px; }
-    h2 { font-size: 17px; margin: 28px 0 6px; color: #a8c7ef; }
-    p, li { color: #b9c6d8; }
-    .draft { margin: 16px 0 24px; padding: 12px 14px; border-radius: 12px; background: #1b2a3d; color: #e8c547; font-size: 14px; }
-  </style>
+  <title>Условия покупки</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="docs.css">
 </head>
 <body>
-<main>
-  <h1>условия покупки</h1>
-  <p class="draft">черновик. Перед запуском для реальных пользователей замени этот текст на утверждённые юридические условия.</p>
+<div class="dk">
+  <nav class="dk-nav" id="dk-nav" aria-label="Документы"></nav>
 
-  <h2>что вы покупаете</h2>
-  <p>Генерации — внутренние единицы сервиса. Одна генерация расходуется на один эмодзи или стикер в вашем паке. Ник и логотип входят в цену. Генерации не сгорают.</p>
+  <main class="dk-doc">
+    <header class="dk-head">
+      <span data-doc-emoji></span>
+      <div class="dk-meta">
+        <span class="dk-chip">Обновлено <b>13 октября 2026</b></span>
+        <span class="dk-chip dk-chip--draft">Черновик</span>
+      </div>
+      <h1>Условия покупки</h1>
+      <p class="dk-lead">Что вы получаете за Stars, как проходит оплата и что делать, если что-то пошло не так.</p>
+    </header>
 
-  <h2>оплата</h2>
-  <p>Оплата принимается в Telegram Stars через встроенный платёжный интерфейс Telegram. Сумма и количество генераций показываются до подтверждения. Платёж обрабатывает Telegram.</p>
+    <section class="dk-sec">
+      <h2><span class="dk-num">01</span>Что вы покупаете</h2>
+      <ul class="dk-list">
+        <li>Генерации — внутренние единицы сервиса. Одна генерация расходуется на один эмодзи или стикер в вашем паке.</li>
+        <li>Ник и логотип на эмодзи уже входят в цену, доплачивать за них не нужно.</li>
+        <li>Генерации <mark>не сгорают</mark>: ими можно воспользоваться в любой момент.</li>
+      </ul>
+    </section>
 
-  <h2>возвраты</h2>
-  <p>Если пак не удалось собрать по техническим причинам, потраченные генерации возвращаются на баланс автоматически. По вопросам возврата оплаты напишите в поддержку из профиля.</p>
+    <section class="dk-sec">
+      <h2><span class="dk-num">02</span>Оплата</h2>
+      <ul class="dk-list">
+        <li>Оплата принимается в Telegram Stars через встроенный платёжный интерфейс Telegram.</li>
+        <li>Сумма и количество генераций показываются до подтверждения. Актуальные цены и скидки — на экране покупки.</li>
+        <li>Платёж обрабатывает Telegram: данные карт мы не получаем и не храним.</li>
+      </ul>
+    </section>
 
-  <h2>подарочные и бонусные генерации</h2>
-  <p>Бонусы за приглашённых друзей и подарочные генерации не подлежат обмену на деньги.</p>
-</main>
+    <section class="dk-sec">
+      <h2><span class="dk-num">03</span>Сборка паков</h2>
+      <ul class="dk-list">
+        <li>Генерации списываются, когда вы создаёте пак.</li>
+        <li>Если пак не собрался по техническим причинам, генерации <mark>возвращаются на баланс</mark> автоматически.</li>
+        <li>Кастомные эмодзи в сообщениях ставят подписчики Telegram Premium; стикеры доступны всем.</li>
+      </ul>
+    </section>
+
+    <section class="dk-sec">
+      <h2><span class="dk-num">04</span>Бонусы и Pro</h2>
+      <ul class="dk-list">
+        <li>Подарочные генерации и награды за приглашённых друзей не обмениваются на деньги.</li>
+        <li>Награда за друга приходит, когда он соберёт свой первый пак; у наград есть дневной и общий лимит.</li>
+        <li>Pro с сохранёнными стилями открывается после покупки нужного количества генераций — сколько осталось, видно в профиле.</li>
+      </ul>
+    </section>
+
+    <section class="dk-sec">
+      <h2><span class="dk-num">05</span>Возврат оплаты</h2>
+      <p>Когда и как можно вернуть Stars, описано в документе <a href="refund.html">«Возврат Stars»</a>.</p>
+    </section>
+
+    <p class="dk-foot">Черновик. Перед запуском для реальных пользователей замените этот текст на утверждённые юридические условия.</p>
+  </main>
+</div>
+<script type="module" src="docs.js"></script>
 </body>
 </html>

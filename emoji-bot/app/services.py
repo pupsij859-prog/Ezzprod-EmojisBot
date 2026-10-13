@@ -229,6 +229,7 @@ def pack_view(row) -> dict:
         "progress": round(progress, 3),
         "created_at": row["created_at"],
         "preview": items[:4],
+        "items": items,
         "params": {"text": params.get("text", ""), "fill": params.get("fill"), "stroke": params.get("stroke")},
     }
 

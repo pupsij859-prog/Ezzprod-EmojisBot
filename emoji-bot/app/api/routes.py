@@ -205,6 +205,7 @@ async def get_pricing(request: Request):
 
 class InvoiceIn(BaseModel):
     qty: int = Field(ge=1, le=10_000)
+    method: str = "stars"
 
 
 @router.post("/billing/invoice", dependencies=[Depends(limited("invoice", 10, 60))])
@@ -212,12 +213,14 @@ async def create_invoice(body: InvoiceIn, request: Request, row=Depends(user_row
     c = ctx_of(request)
     if body.qty > c.settings.max_buy_qty:
         raise HTTPException(422, {"code": "validation", "field": "qty"})
+    if body.method not in pricing.enabled_methods(c.settings):
+        raise HTTPException(503, {"code": "method_unavailable"})
     if c.payments is None or not c.settings.payments_live or c.settings.demo_mode:
         raise HTTPException(503, {"code": "payments_unavailable"})
     q = pricing.quote(c.settings, body.qty)
-    payment_id = await services.create_payment(c.db, row["id"], q.qty, q.total)
-    url = await c.payments.create_invoice(payment_id=payment_id, qty=q.qty, amount=q.total)
-    return {"url": url, "payment_id": payment_id, "total": q.total}
+    payment_id = await services.create_payment(c.db, row["id"], q.qty, q.stars)
+    url = await c.payments.create_invoice(payment_id=payment_id, qty=q.qty, amount=q.stars)
+    return {"url": url, "payment_id": payment_id, "total": q.total, "stars": q.stars}
 
 
 @router.get("/billing/payments/{payment_id}")
@@ -239,13 +242,7 @@ async def emoji_map(request: Request):
     return {"emoji": emoji.public_map(c.settings, bot_ready=c.bot is not None)}
 
 
-@router.get("/emoji/{key}")
-async def emoji_file(key: str, request: Request, thumb: bool = False):
-    """Файл кастомного эмодзи по ключу из app/emoji.py: Lottie JSON, WebM или WebP."""
-    c = ctx_of(request)
-    emoji_id = emoji.ids(c.settings).get(key)
-    if emoji_id is None:
-        raise HTTPException(404, {"code": "no_emoji"})
+async def _emoji_response(c: Context, emoji_id: str, thumb: bool):
     if c.emoji_store is None:
         c.emoji_store = emoji.EmojiStore(c.settings.data_dir / "emoji")
     hit = await c.emoji_store.get(c.bot, emoji_id, thumb=thumb)
@@ -253,6 +250,26 @@ async def emoji_file(key: str, request: Request, thumb: bool = False):
         raise HTTPException(404, {"code": "no_emoji"})
     path, media_type = hit
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "public, max-age=604800"})
+
+
+@router.get("/emoji/id/{emoji_id}")
+async def emoji_by_id(emoji_id: str, request: Request, thumb: bool = False):
+    """Анимированный премиум-эмодзи по custom_emoji_id (только из премиум-паков и назначенных ключам)."""
+    c = ctx_of(request)
+    if not emoji.allowed_id(c.settings, emoji_id):
+        raise HTTPException(404, {"code": "no_emoji"})
+    return await _emoji_response(c, emoji_id, thumb)
+
+
+@router.get("/emoji/{key}")
+async def emoji_file(key: str, request: Request, thumb: bool = False):
+    """Файл кастомного эмодзи по ключу из app/emoji.py: Lottie JSON, WebM или WebP."""
+    c = ctx_of(request)
+    emoji_id = emoji.ids(c.settings).get(key)
+    if emoji_id is None:
+        raise HTTPException(404, {"code": "no_emoji"})
+    return await _emoji_response(c, emoji_id, thumb)
+
 
 
 # ───────────── рефералка ─────────────

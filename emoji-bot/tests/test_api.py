@@ -215,7 +215,8 @@ def test_billing_invoice_and_payment_polling(client):
     from dataclasses import replace
     client.app_state.ctx.settings = replace(client.app_state.ctx.settings, demo_mode=False, payments_live=True)
     r = client.post("/api/billing/invoice", json={"qty": 30}, headers=h)
-    assert r.status_code == 200 and r.json()["total"] == 162 and fake.calls[0][1:] == (30, 162)
+    assert r.status_code == 200 and r.json()["total"] == 135 and r.json()["stars"] == 108 and fake.calls[0][1:] == (30, 108)
+    assert client.post("/api/billing/invoice", json={"qty": 5, "method": "sbp"}, headers=h).status_code == 503
     pid = r.json()["payment_id"]
     assert client.get(f"/api/billing/payments/{pid}", headers=h).json() == {"status": "pending"}
     assert client.get(f"/api/billing/payments/{pid}", headers=dev(601)).status_code == 404  # чужой не виден
@@ -237,7 +238,8 @@ def test_invoices_can_be_switched_off(tmp_path):
 
 def test_pricing_endpoint(client):
     p = client.get("/api/pricing").json()
-    assert p["currency"] == "XTR" and p["totals"][20] == 120 and p["default_qty"] == 20
+    assert p["currency"] == "RUB" and p["totals"][20] == 100 and p["default_qty"] == 20
+    assert [m["id"] for m in p["methods"] if m["enabled"]] == ["stars"]
 
 
 def test_rate_limit(client):

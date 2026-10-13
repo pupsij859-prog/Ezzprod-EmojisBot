@@ -1,23 +1,41 @@
-"""Цены в Stars. Единственное место, где считается стоимость генераций."""
+"""Цены. Единственное место, где считается стоимость генераций.
+
+Базовая валюта — рубли. При оплате Звёздами сумма пересчитывается по курсу RUB_PER_STAR
+и округляется вверх (Telegram принимает только целые Stars).
+"""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .config import Settings
+
+# способы оплаты: id → (название, подпись). Работают только те, у которых есть провайдер (см. enabled_methods)
+METHODS: tuple[tuple[str, str, str], ...] = (
+    ("stars", "Звёзды", ""),
+    ("sbp", "СБП", "Через приложение банка"),
+    ("xrocket", "xRocket", "USDT, TON и другие монеты"),
+    ("cryptobot", "CryptoBot", "Оплата криптовалютой"),
+)
 
 
 @dataclass(frozen=True)
 class Quote:
     qty: int
-    total: int          # итого Stars (целое — так требует Telegram)
-    unit: float         # средняя цена за штуку
+    total: int          # итого, ₽
+    unit: float         # средняя цена за штуку, ₽
     discount_pct: int   # фактическая скидка относительно базовой цены
+    stars: int          # та же сумма в Stars (для оплаты Звёздами)
+
+
+def stars_for(settings: Settings, rub: int) -> int:
+    return max(1, math.ceil(round(rub / settings.rub_per_star, 6)))
 
 
 def _raw(settings: Settings, qty: int) -> int:
-    base = settings.stars_per_gen
+    base = settings.price_rub
     if qty >= settings.bulk_unit_from:
-        total = qty * settings.bulk_unit_stars
+        total = qty * settings.bulk_unit_rub
     elif qty >= settings.bulk_discount_from:
         total = round(qty * base * (100 - settings.bulk_discount_pct) / 100)
     else:
@@ -39,21 +57,33 @@ def quote(settings: Settings, qty: int) -> Quote:
         raise ValueError("qty must be >= 1")
     upto = max(qty, settings.max_buy_qty)
     total = _totals(settings, upto)[qty]
-    full = qty * settings.stars_per_gen
+    full = qty * settings.price_rub
     discount = round((1 - total / full) * 100) if full else 0
-    return Quote(qty=qty, total=total, unit=total / qty, discount_pct=max(0, discount))
+    return Quote(qty=qty, total=total, unit=total / qty, discount_pct=max(0, discount), stars=stars_for(settings, total))
+
+
+def enabled_methods(settings: Settings) -> set[str]:
+    """Пока подключены только Звёзды; CryptoBot, xRocket и СБП ждут ключей провайдеров."""
+    return {"stars"}
 
 
 def pricing_table(settings: Settings) -> dict:
-    """Всё, что нужно клиенту, чтобы показать цены (totals[qty] — точная сумма)."""
+    """Всё, что нужно клиенту, чтобы показать цены (totals[qty] — точная сумма в ₽)."""
+    rate = f"{settings.rub_per_star:g}".replace(".", ",")
+    enabled = enabled_methods(settings)
     return {
-        "currency": "XTR",
-        "unit": settings.stars_per_gen,
+        "currency": "RUB",
+        "unit": settings.price_rub,
         "discount_from": settings.bulk_discount_from,
         "discount_pct": settings.bulk_discount_pct,
         "bulk_from": settings.bulk_unit_from,
-        "bulk_unit": settings.bulk_unit_stars,
+        "bulk_unit": settings.bulk_unit_rub,
+        "rub_per_star": settings.rub_per_star,
         "max_qty": settings.max_buy_qty,
         "default_qty": 20,
         "totals": _totals(settings, settings.max_buy_qty),
+        "methods": [
+            {"id": mid, "title": title, "sub": sub or f"1 звезда = {rate} ₽", "enabled": mid in enabled}
+            for mid, title, sub in METHODS
+        ],
     }

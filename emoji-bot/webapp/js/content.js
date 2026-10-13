@@ -18,5 +18,17 @@ export const SLIDES = [
   { image: 'assets/ins-2.svg', emoji: 'palette', title: 'Настрой под себя', text: 'Во вкладке «Заказать» добавь ник, логотип и цвета. Всё это уже входит в цену.' },
   { image: 'assets/ins-3.svg', emoji: 'rocket', title: 'Создай пак', text: 'Жми «Создать пак»: соберём за пару секунд и пришлём сообщение, когда всё будет готово.' },
   { image: 'assets/ins-4.svg', emoji: 'phone', title: 'Добавь в Telegram', text: 'Открой готовый пак и нажми «Добавить»: эмодзи появятся в клавиатуре, стикеры в списке стикеров.' },
-  { image: 'assets/ins-5.svg', emoji: 'friends', title: 'Генерации и друзья', text: 'Генерации не сгорают. Докупай их за ⭐ или зови друзей: за каждого, кто соберёт пак, бонус.' },
+  { image: 'assets/ins-5.svg', emoji: 'friends', title: 'Генерации и друзья', text: 'Генерации не сгорают. Докупай их за Stars или зови друзей: за каждого, кто соберёт пак, бонус.' },
+];
+
+// Баннеры карточки профиля (assets/banners, 800×400). В карточке слева затемнение под аватаром и именем,
+// поэтому главное в кадре сдвигаем вправо: size — масштаб фона, pos — background-position.
+// ?v= — меняй при замене файлов: картинки кэшируются браузером на час.
+export const BANNERS = [
+  { id: 'sunset', src: 'assets/banners/sunset.webp?v=2', size: 'cover', pos: '50% 74%' },
+  { id: 'kabachki', src: 'assets/banners/kabachki.webp?v=2', size: '150% auto', pos: '30% 2%' },
+  { id: 'cat', src: 'assets/banners/cat.webp?v=2', size: '150% auto', pos: '30% 50%' },
+  { id: 'corgi', src: 'assets/banners/corgi.webp?v=2', size: '150% auto', pos: '40% 46%' },
+  { id: 'pug-glasses', src: 'assets/banners/pug-glasses.webp?v=2', size: '150% auto', pos: '0% 42%' },
+  { id: 'pug-cap', src: 'assets/banners/pug-cap.webp?v=2', size: 'cover', pos: '50% 55%' },
 ];

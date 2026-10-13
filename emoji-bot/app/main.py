@@ -38,39 +38,52 @@ def create_app(settings: Settings | None = None, *, with_bot: bool = True) -> Fa
         app.state.ctx = ctx
 
         bot = None
-        polling: asyncio.Task | None = None
-        reconciler: asyncio.Task | None = None
+        tasks: list[asyncio.Task] = []
         if settings.dev_mode:
             log.warning("DEV_MODE включён: вход без подписи Telegram разрешён только с localhost")
         if with_bot and settings.bot_token:
+            from aiogram.exceptions import TelegramNetworkError
+
             from .bot import TelegramNotifier, configure_bot, create_bot, create_dispatcher
             from .payments import StarsProvider
             from .reconcile import reconcile_loop
 
             bot = create_bot(settings)
-            try:
+
+            async def start_bot() -> None:
+                """Подключение к Telegram в фоне: веб-часть уже работает. Нет связи с api.telegram.org —
+                повторяем с растущей паузой (бывает после смены туннеля или VPN); другие ошибки (например,
+                неверный токен) повторять бессмысленно."""
+                delay = 5
+                while True:
+                    try:
+                        await configure_bot(bot, ctx)
+                        break
+                    except (TelegramNetworkError, OSError, asyncio.TimeoutError) as exc:
+                        log.warning("нет связи с api.telegram.org (%s), повтор через %s с", exc, delay)
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 60)
+                    except Exception:
+                        log.exception("бот не запустился (проверь BOT_TOKEN). Работает только веб-часть")
+                        return
                 ctx.bot = bot
                 ctx.notifier = runner.notifier = TelegramNotifier(bot, ctx)
                 ctx.payments = StarsProvider(bot, settings.brand_name)
-                await configure_bot(bot, ctx)
                 builder.set_bot_username(ctx.bot_username)
                 dp = create_dispatcher(ctx)
-                polling = asyncio.create_task(
+                tasks.append(asyncio.create_task(
                     dp.start_polling(bot, handle_signals=False, allowed_updates=dp.resolve_used_update_types()),
                     name="bot-polling",
-                )
+                ))
                 if settings.payments_live:
-                    reconciler = asyncio.create_task(reconcile_loop(ctx), name="stars-reconcile")
+                    tasks.append(asyncio.create_task(reconcile_loop(ctx), name="stars-reconcile"))
                     if settings.demo_mode:
                         log.warning(
                             "DEMO_MODE=1: выпуск счетов и подтверждение оплаты Stars заблокированы. "
                             "Для работы с реальными платежами нужна настоящая сборка паков."
                         )
-            except Exception:
-                log.exception("бот не запустился (проверь BOT_TOKEN и доступ к api.telegram.org). Работает только веб-часть")
-                ctx.bot = None
-                ctx.payments = None
-                ctx.notifier = runner.notifier = NullNotifier()
+
+            tasks.append(asyncio.create_task(start_bot(), name="bot-start"))
         elif with_bot:
             log.warning("BOT_TOKEN не задан: работает только веб-часть (без бота и оплаты Stars)")
 
@@ -81,10 +94,9 @@ def create_app(settings: Settings | None = None, *, with_bot: bool = True) -> Fa
         try:
             yield
         finally:
-            for task in (polling, reconciler):
-                if task is not None:
-                    task.cancel()
-            await asyncio.gather(*(t for t in (polling, reconciler) if t is not None), return_exceptions=True)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await runner.shutdown()
             if bot is not None:
                 await bot.session.close()

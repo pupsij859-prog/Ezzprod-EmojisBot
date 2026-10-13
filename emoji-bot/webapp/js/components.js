@@ -34,7 +34,7 @@ export const handle = (me) => (me && me.username ? `@${me.username}` : displayNa
 // ── шапка вкладки: аватар и @username слева, баланс справа
 export function Topbar(onBalance) {
   return h('header', { class: 'topbar' },
-    h('span', { class: 'topbar__who' }, Avatar({ size: 'sm' }), h('span', { class: 'topbar__handle' }, handle(state.me))),
+    h('span', { class: 'topbar__who' }, Avatar({ size: 'hd' }), h('span', { class: 'topbar__handle' }, handle(state.me))),
     h('span', { class: 'topbar__spacer' }),
     onBalance ? BalanceChip(onBalance) : null);
 }
@@ -77,22 +77,6 @@ export function Chips(options, value, onChange) {
 /** Заголовок раздела слева и действие справа («Шаблоны · Классика >»). */
 export const SectionHead = (title, action) => h('div', { class: 'section-head' },
   h('h2', { class: 'section-head__title' }, title), action || null);
-
-/**
- * Плитка с мягкой цветной подсветкой (как блок «Полезное»).
- * glow — 'r, g, b' или var(--glow-*); art — картинка/иконка в центре.
- */
-export function GlowTile({ label, glow, art, onClick, index = 0, ariaLabel, badge }) {
-  const style = { '--i': String(index) };
-  if (glow) style['--glow'] = glow;
-  return h('button', {
-    class: 'gtile', type: 'button', style, 'aria-label': ariaLabel || undefined,
-    onclick: () => { haptic.tap(); if (onClick) onClick(); },
-  },
-  art ? h('span', { class: 'gtile__art', 'aria-hidden': 'true' }, art) : null,
-  badge ? h('span', { class: 'gtile__count' }, badge) : null,
-  h('span', { class: 'gtile__label' }, label));
-}
 
 // ── кнопки
 export function Button({ label, variant = 'primary', onClick, disabled = false, icon: iconName, full = true, type = 'button' }) {
@@ -175,15 +159,12 @@ export const Group = (...rows) => h('div', { class: 'group' }, ...rows);
 
 export const SectionTitle = (text) => h('h3', { class: 'section-title' }, text);
 
-// ── заголовок блока по центру («Полезное»)
-export const ScreenTitle = (text, id) => h('h2', { class: 'screen-title', id }, text);
-
 export function CloseButton(onClick) {
   return h('button', { class: 'close-btn', type: 'button', 'aria-label': 'закрыть', onclick: onClick }, icon('close'));
 }
 
-/** Иконка в квадрате с подсветкой — для пустых состояний и заставок. */
-export const GlowIcon = (iconName, cls = '') => h('div', { class: `empty__icon ${cls}`.trim(), 'aria-hidden': 'true' }, icon(iconName));
+/** Крупный анимированный эмодзи для заставок и пустых состояний (ключ из app/emoji.py). */
+export const BigEmoji = (key, cls = '') => h('div', { class: `bigmoji ${cls}`.trim(), 'aria-hidden': 'true' }, TgEmoji(key));
 
 export function Skeleton(cls) {
   return h('div', { class: `skeleton ${cls || ''}`.trim(), 'aria-hidden': 'true' });
@@ -191,7 +172,7 @@ export function Skeleton(cls) {
 
 export function ErrorState({ title = 'Не получилось загрузить', text = 'Проверь соединение и попробуй ещё раз', onRetry }) {
   return h('div', { class: 'empty empty--error' },
-    GlowIcon('info'),
+    BigEmoji('oops'),
     h('h2', { class: 'empty__title' }, title),
     h('p', { class: 'empty__text' }, text),
     onRetry ? Button({ label: 'Повторить', variant: 'secondary', onClick: onRetry, full: false }) : null);

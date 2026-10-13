@@ -4,15 +4,19 @@ import { api, previewUrl } from '../api.js';
 import { ErrorState, SectionHead, Skeleton, Topbar } from '../components.js';
 import { bus, isSelected, limitFor, savePrefs, state, toggleSelection } from '../store.js';
 import { haptic } from '../tg.js';
+import { mountCrtWarp } from '../crt.js';
 import { cap, h, icon, toast } from '../ui.js';
 import { openCategories } from './categories.js';
 
 const categoryName = () => (state.categories.find((c) => c.id === state.category) || { name: '' }).name;
 
+// баннер: голубой CRT Warp на фоне и приветствие
 function Hero(me) {
   const name = (me.first_name || me.username || 'друг').trim();
-  return h('section', { class: 'hero' },
+  const fx = h('div', { class: 'hero__fx', 'aria-hidden': 'true' });
+  const el = h('section', { class: 'hero' }, fx,
     h('h1', { class: 'hero__title' }, h('span', null, 'Добро пожаловать,'), h('span', null, name)));
+  return { el, start: () => mountCrtWarp(fx) };
 }
 
 function Card(item, index) {
@@ -61,9 +65,10 @@ export function mountHome(container) {
     });
   } }, pillLabel, icon('chev-right', 'catpill__chev'));
 
+  const hero = Hero(state.me);
   container.append(h('section', { class: 'screen screen--home' },
     Topbar(),
-    Hero(state.me),
+    hero.el,
     SectionHead('Шаблоны', pill),
     grid, sentinel));
 
@@ -123,5 +128,6 @@ export function mountHome(container) {
   });
 
   reset();
-  return () => { alive = false; observer.disconnect(); offSelection(); offText(); };
+  const stopFx = hero.start();
+  return () => { alive = false; stopFx(); observer.disconnect(); offSelection(); offText(); };
 }
