@@ -23,7 +23,7 @@ export function BalanceChip(onClick) {
   return pressable(h('button', {
     class: 'chip chip--balance pill', type: 'button', onclick: onClick,
     'aria-label': 'баланс генераций, пополнить',
-  }, h('span', { class: 'chip__gem', 'aria-hidden': 'true' }, icon('sparkle-fill', 'chip__icon')), value));
+  }, h('span', { class: 'chip__gem', 'aria-hidden': 'true' }, icon('gens', 'chip__icon')), value));
 }
 
 /**
@@ -179,9 +179,8 @@ export function Row({ label, sub, value, chevron = true, pro = false, iconName, 
   return row;
 }
 
-/** Метка Pro: переливающийся «голографический» жетон с короной. */
-export const ProBadge = (cls = '') => h('span', { class: `badge badge--pro ${cls}`.trim(), 'aria-label': 'доступно в Pro' },
-  icon('crown', 'badge__icon'), h('span', null, 'Pro'));
+/** Метка Pro: белая «таблетка» с надписью PRO. */
+export const ProBadge = (cls = '') => h('span', { class: `badge badge--pro ${cls}`.trim(), 'aria-label': 'доступно в Pro' }, 'Pro');
 
 export const Group = (...rows) => h('div', { class: 'group' }, ...rows);
 

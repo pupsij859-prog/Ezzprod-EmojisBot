@@ -803,12 +803,11 @@ button.arow:active { background: var(--surface-2); transform: scale(0.985); }
 @media (prefers-reduced-motion: reduce) { .vtile__emoji::before { animation: none; } }
 .vtile__text { justify-items: start; }
 .vtile__text span { color: var(--text-3); }
-.vtile__text .vtile__pro, .vtile__text .vtile__pro span { margin-top: 3px; font: 800 11px/1 var(--font); color: #17112b; }
-.vtile__text .vtile__pro span { margin: 0; }
-.vhero__plan.is-pro {
-  color: #17112b; box-shadow: none;
-  background: linear-gradient(105deg, #a8ecff 0%, #d4b8ff 24%, #ffc2e6 46%, #fff0b3 64%, #a8ffd9 82%, #a8ecff 100%);
-  background-size: 240% 100%; animation: pro-sheen 4.5s linear infinite;
+.vtile__text .vtile__pro { margin-top: 4px; font: 800 10px/1 var(--font-wide); color: #0a0a0a; }
+/* тариф в шапке профиля: PRO и OWNER — белые «таблетки», как метки Pro */
+.vhero__plan.is-pro, .vhero__plan.is-owner {
+  padding: 6px 11px; background: #fff; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none;
+  font: 800 11px/1 var(--font-wide); letter-spacing: 0.04em; text-transform: uppercase; color: #0a0a0a;
 }
 
 /* ───────── приглашение ───────── */

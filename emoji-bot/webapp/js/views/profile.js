@@ -54,7 +54,7 @@ export function mountProfile(container) {
         plan)));
 
   // ── статистика
-  const balanceValue = () => [h('span', { 'data-balance': '' }, String(me().balance)), icon('sparkle-fill', 'vcard__spark')];
+  const balanceValue = () => [h('span', { 'data-balance': '' }, String(me().balance)), icon('gens', 'vcard__spark')];
   const cBalance = StatCard({ title: 'Баланс', value: balanceValue(), foot: foot('1', 'генерация = 1 эмодзи'), onClick: () => openBuy() });
   const cBought = StatCard({ title: 'Куплено', value: '0', onClick: openFreeInfo });
   const cPacks = StatCard({ title: 'Паки', value: '—', foot: 'загружаем…', onClick: () => goTab('packs') });
@@ -62,8 +62,10 @@ export function mountProfile(container) {
 
   const paintMe = () => {
     const m = me();
-    plan.textContent = m.plan === 'pro' ? 'Pro' : 'Бесплатный';
-    plan.classList.toggle('is-pro', m.plan === 'pro');
+    // у владельца (админа) вместо тарифа — OWNER
+    plan.textContent = m.is_admin ? 'Owner' : m.plan === 'pro' ? 'Pro' : 'Бесплатный';
+    plan.classList.toggle('is-owner', Boolean(m.is_admin));
+    plan.classList.toggle('is-pro', !m.is_admin && m.plan === 'pro');
     cBalance.set(balanceValue());
     const left = Math.max(0, m.pro_min - m.purchased_total);
     cBought.set(String(m.purchased_total), m.plan === 'pro' ? foot('Pro', 'открыт') : foot(`ещё ${left}`, 'до Pro'));

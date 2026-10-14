@@ -127,7 +127,7 @@ function Showcase() {
   const pos = h('span', { class: 'show__pos' });
   const el = h('section', { class: 'show' }, fx,
     h('div', { class: 'show__top' },
-      h('span', { class: 'show__chip' }, icon('sparkle-fill', 'show__spark'), balance),
+      h('span', { class: 'show__chip' }, icon('gens', 'show__spark'), balance),
       pos),
     stage);
   let player = null;

@@ -84,7 +84,7 @@ export function openPayMethods({ qty, onPaid }) {
       return [
         h('div', { class: 'sheet__grab pmhead' },
           h('h2', { class: 'pmhead__title' }, 'Выберите способ оплаты'),
-          h('p', { class: 'pmhead__sub' }, icon('sparkle-fill', 'pmhead__spark'), `${gens(qty)} · `, rub(total))),
+          h('p', { class: 'pmhead__sub' }, icon('gens', 'pmhead__spark'), `${gens(qty)} · `, rub(total))),
         h('div', { class: 'sheet__body' }, h('div', { class: 'pmlist' }, ...rows)),
         h('div', { class: 'sheet__footer' }, termsNote()),
       ];

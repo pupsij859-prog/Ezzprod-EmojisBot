@@ -118,7 +118,8 @@ window.addEventListener('ez:session-expired', () => {
 
 // шрифт не блокирует первый показ: пока он грузится (или если Google недоступен) работает системный
 function loadFont() {
-  document.head.append(h('link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&display=swap' }));
+  document.head.append(h('link', { rel: 'stylesheet',
+    href: 'https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Unbounded:wght@800&display=swap' }));
 }
 
 async function boot() {

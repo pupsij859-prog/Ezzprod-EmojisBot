@@ -60,7 +60,8 @@
   --gutter: 16px;
 
   --font: 'Open Sans', -apple-system, 'Segoe UI', Roboto, system-ui, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+  --font-wide: 'Unbounded', 'Arial Black', 'Segoe UI Black', var(--font); /* жетоны PRO / OWNER */
+  --font-mono:ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 
   --ease: cubic-bezier(0.22, 0.8, 0.24, 1);
   --ease-spring: cubic-bezier(0.34, 1.32, 0.5, 1);

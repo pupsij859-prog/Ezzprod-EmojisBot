@@ -170,7 +170,7 @@ function UserRow(u, onChanged) {
     h('span', { class: 'arow__main' },
       h('b', null, displayName(u) || `id ${u.id}`),
       h('span', null, `${u.username ? `@${u.username} · ` : ''}id ${u.id} · с ${date(u.created_at)}`)),
-    h('span', { class: 'arow__value' }, num(u.balance), icon('sparkle-fill', 'arow__spark')));
+    h('span', { class: 'arow__value' }, num(u.balance), icon('gens', 'arow__spark')));
 }
 
 function openUser(userId, onChanged) {

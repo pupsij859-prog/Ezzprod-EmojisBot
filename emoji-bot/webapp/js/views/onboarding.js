@@ -106,7 +106,7 @@ const SCENES = {
     return h('div', { class: 'sc-bal' },
       BigEmoji('gift', 'sc-bal__emoji'),
       h('div', { class: 'sc-bal__chips' },
-        h('span', { class: 'sc-chip' }, icon('sparkle-fill'), 'На балансе ', h('b', null, String(me.balance))),
+        h('span', { class: 'sc-chip' }, icon('gens'), 'На балансе ', h('b', null, String(me.balance))),
         h('span', { class: 'sc-chip' }, TgEmoji('friends'), h('b', null, `+${me.referral_reward}`), ' за друга')));
   },
 };
