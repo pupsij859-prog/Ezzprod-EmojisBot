@@ -17,13 +17,13 @@ export function Avatar({ size = 'md' } = {}) {
   return el;
 }
 
-// ── чип баланса «✦ N»; число обновляется само при событии 'me'
+// ── баланс генераций «иконка N (+)»; число обновляется само при событии 'me', «+» — пополнить
 export function BalanceChip(onClick) {
   const value = h('span', { class: 'chip__value', 'data-balance': '' }, String(state.me ? state.me.balance : 0));
   return pressable(h('button', {
     class: 'chip chip--balance pill', type: 'button', onclick: onClick,
     'aria-label': 'баланс генераций, пополнить',
-  }, h('span', { class: 'chip__gem', 'aria-hidden': 'true' }, icon('gens', 'chip__icon')), value));
+  }, icon('gens', 'chip__icon'), value, h('span', { class: 'chip__plus', 'aria-hidden': 'true' }, icon('plus'))));
 }
 
 /**
