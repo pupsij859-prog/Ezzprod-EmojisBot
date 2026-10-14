@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import secrets
-from .. import catalog, services
+from .. import catalog, services, user_fonts
 from ..config import Settings
 from ..db import Database
 from ..packs import BuildResult
@@ -93,7 +93,8 @@ class TelegramPackBuilder:
                 logos[logo_id] = logo_vectors(self.settings.logos_dir, logo_id)
             return ItemSpec(template_id=item["template_id"], kind=kind, text=p.get("text") or "",
                             color=p.get("color"), stroke=p.get("stroke"), logo_vectors=logos[logo_id],
-                            size=p.get("size") or 100, edit_json=json.dumps(own.get("edit")) if own.get("edit") else "")
+                            size=p.get("size") or 100, edit_json=json.dumps(own.get("edit")) if own.get("edit") else "",
+                            font_path=str(user_fonts.font_path(self.settings, p.get("font_id")) or ""))
 
         async def render(item) -> StickerFile | None:
             try:

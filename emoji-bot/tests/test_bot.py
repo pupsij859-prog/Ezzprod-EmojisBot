@@ -77,6 +77,7 @@ async def test_start_sends_banner_with_webapp_button_and_registers_referral(env,
     assert len(photos) == 1
     button = photos[0].reply_markup.inline_keyboard[0][0]
     assert button.text == "открыть редактор" and button.web_app.url == "https://app.example.com"
+    assert button.style == "success"  # цветная кнопка
     assert ctx.banner_file_id == "banner-file-id"      # дальше баннер шлётся по file_id
     assert (await services.get_user(db, 5))["referred_by"] == 1
 
@@ -219,3 +220,10 @@ async def test_public_url_change_updates_start_button_and_menu(env, tmp_path):
     assert session.sent("SetChatMenuButton")[-1].menu_button.web_app.url == "https://new-addr.lhr.life"
     await dp.feed_update(bot, command(9, "/start"))
     assert session.sent("SendPhoto")[-1].reply_markup.inline_keyboard[0][0].web_app.url == "https://new-addr.lhr.life"
+
+
+def test_start_banner_is_the_project_picture():
+    from app.bot import banner
+
+    path = banner.get_banner(None)  # готовой картинке настройки не нужны
+    assert path == banner.START_BANNER and path.exists()

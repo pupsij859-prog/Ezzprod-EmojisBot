@@ -51,7 +51,7 @@ class BodyLimitMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
             return await self.app(scope, receive, send)
-        limit = MAX_UPLOAD_BODY if scope["path"] == "/api/logos" else MAX_JSON_BODY
+        limit = MAX_UPLOAD_BODY if scope["path"] in ("/api/logos", "/api/fonts") else MAX_JSON_BODY
         declared = dict(scope.get("headers") or []).get(b"content-length")
         if declared is not None and declared.isdigit() and int(declared) > limit:
             return await self._reject(send)

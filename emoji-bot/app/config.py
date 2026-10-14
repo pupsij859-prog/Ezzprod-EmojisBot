@@ -135,6 +135,8 @@ class Settings:
     styles_max: int = 20
     logos_max: int = 20
     logo_max_bytes: int = 2 * 1024 * 1024
+    fonts_max: int = 5
+    font_max_bytes: int = int(2.5 * 1024 * 1024)
 
     # имитация сборки: сколько секунд «собирается» пак
     demo_build_min_s: float = 3.0
@@ -147,6 +149,10 @@ class Settings:
     @property
     def logos_dir(self) -> Path:
         return self.data_dir / "logos"
+
+    @property
+    def fonts_dir(self) -> Path:
+        return self.data_dir / "fonts"
 
     def validate(self) -> None:
         """Опасные сочетания настроек не запускаем."""

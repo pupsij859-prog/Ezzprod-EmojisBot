@@ -8,15 +8,16 @@ import { openOverlay } from '../nav.js';
 import { editFor, lookFor, setItemEdit, state } from '../store.js';
 import { haptic } from '../tg.js';
 import { loadLottie, renderParams } from '../tgs.js';
-import { debounce, h, icon, plural, prefersReducedMotion, toast } from '../ui.js';
+import { h, icon, plural, prefersReducedMotion, replaceChildren, toast } from '../ui.js';
 import { openBuy } from './buy.js';
 
 // настройки эффектов по умолчанию — как FX в app/editor.py
 const FX = {
-  pixel: { on: false, grid: 32, shape: 'square', fps: 15, colors: 48, lines: 50 },
+  pixel: { on: false, grid: 32, shape: 'square', fps: 15, colors: 48, lines: 80, gap: 14 },
   metal: { on: false, width: 100 },
   glitch: { on: false, count: 6, len: 100, shift: 100, stripes: 8, dashes: 18, ghost: true, c1: '#ff1f4b', c2: '#18e0ff', seed: 1 },
-  holo: { on: false, only: false, parts: [], palette: 'red', dir: 'cw', turns: 1, width: 100, bright: 88, gloss: true },
+  holo: { on: false, only: false, parts: [], palette: 'red', dir: 'cw', turns: 1, width: 100, bright: 88, gloss: true,
+    target: 'contour', dark: true, tint: null, edge: 10 },
   burst: { kind: 'none', count: 10, color: null },
 };
 const ANIMS = [
@@ -27,7 +28,55 @@ const PALETTES = [
   ['red', '#ff2d55'], ['blue', '#2fa8ff'], ['purple', '#9b5cff'], ['yellow', '#ffc23d'], ['green', '#2fe0a5'],
   ['pink', '#ff5ccf'], ['rainbow', null],
 ];
-const BURSTS = [['none', 'нет'], ['sparks', 'искры'], ['hearts', 'сердечки'], ['confetti', 'конфетти'], ['stars', 'звёзды'], ['flash', 'вспышка']];
+// эффект при показе: id, подпись, цвет подсветки плитки
+const BURSTS = [['none', 'нет', '#ffffff'], ['sparks', 'искры', '#ffd23f'], ['hearts', 'сердечки', '#ff3d6e'],
+  ['confetti', 'конфетти', '#4dc3ff'], ['stars', 'звёзды', '#ffc23d'], ['flash', 'вспышка', '#ffffff']];
+// цвет частиц: null — родные цвета эффекта (как BURST_COLORS / CONFETTI в app/editor.py)
+const BURST_COLORS = [null, '#ffffff', '#ffd23f', '#ff3d6e', '#9b5cff', '#2fa8ff', '#2fe0a5'];
+
+// иконки эффектов (viewBox 32×32): рисуют то, что появится вокруг эмодзи
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svg(children) {
+  const el = document.createElementNS(SVG_NS, 'svg');
+  el.setAttribute('viewBox', '0 0 32 32');
+  el.setAttribute('aria-hidden', 'true');
+  el.classList.add('ed-fxtile__art');
+  children.forEach(([tag, attrs]) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v));
+    el.append(n);
+  });
+  return el;
+}
+const star4 = (cx, cy, r) => `M${cx} ${cy - r}L${cx + r * 0.24} ${cy - r * 0.24}L${cx + r} ${cy}L${cx + r * 0.24} ${cy + r * 0.24}`
+  + `L${cx} ${cy + r}L${cx - r * 0.24} ${cy + r * 0.24}L${cx - r} ${cy}L${cx - r * 0.24} ${cy - r * 0.24}Z`;
+const star5 = (cx, cy, r) => `${Array.from({ length: 10 }, (_, j) => {
+  const rr = j % 2 ? r * 0.45 : r;
+  const a = (Math.PI * j) / 5;
+  return `${j ? 'L' : 'M'}${(cx + rr * Math.sin(a)).toFixed(2)} ${(cy - rr * Math.cos(a)).toFixed(2)}`;
+}).join('')}Z`;
+const HEART = 'M16 27.5c-.4 0-.8-.1-1.1-.4C8.6 21.8 4 17.6 4 12.4 4 8.8 6.8 6 10.3 6c2.2 0 4.3 1.1 5.7 2.9C17.4 7.1 19.5 6 21.7 6 25.2 6 28 8.8 28 12.4c0 5.2-4.6 9.4-10.9 14.7-.3.3-.7.4-1.1.4z';
+function burstArt(kind, color) {
+  const c = (own) => color || own;
+  switch (kind) {
+    case 'sparks': return svg([['path', { d: star4(14, 17, 11), fill: c('#ffd23f') }], ['path', { d: star4(25, 7, 4.5), fill: c('#ffe78a') }]]);
+    case 'hearts': return svg([['path', { d: HEART, fill: c('#ff3d6e') }], ['circle', { cx: 11, cy: 11, r: 2.2, fill: '#fff', opacity: 0.55 }]]);
+    case 'confetti': return svg([
+      ['rect', { x: 5, y: 7, width: 8, height: 4, rx: 1, fill: c('#ff4d6d'), transform: 'rotate(-24 9 9)' }],
+      ['rect', { x: 18, y: 4, width: 8, height: 4, rx: 1, fill: c('#ffd23f'), transform: 'rotate(30 22 6)' }],
+      ['rect', { x: 12, y: 15, width: 8, height: 4, rx: 1, fill: c('#4dc3ff'), transform: 'rotate(12 16 17)' }],
+      ['rect', { x: 4, y: 22, width: 8, height: 4, rx: 1, fill: c('#4dffa6'), transform: 'rotate(40 8 24)' }],
+      ['rect', { x: 20, y: 22, width: 8, height: 4, rx: 1, fill: c('#b06bff'), transform: 'rotate(-35 24 24)' }]]);
+    case 'stars': return svg([['path', { d: star5(14, 17, 11), fill: c('#ffc23d') }], ['path', { d: star5(26, 7, 4.5), fill: c('#ffe08a') }]]);
+    case 'flash': return svg([
+      ['circle', { cx: 16, cy: 16, r: 8, fill: 'none', stroke: c('#ffffff'), 'stroke-width': 3 }],
+      ['circle', { cx: 16, cy: 16, r: 13.5, fill: 'none', stroke: c('#ffffff'), 'stroke-width': 1.5, opacity: 0.4 }],
+      ['path', { d: star4(16, 16, 4), fill: c('#ffffff') }]]);
+    default: return svg([
+      ['circle', { cx: 16, cy: 16, r: 10, fill: 'none', stroke: 'currentColor', 'stroke-width': 2.2 }],
+      ['path', { d: 'M9 23L23 9', stroke: 'currentColor', 'stroke-width': 2.2, 'stroke-linecap': 'round' }]]);
+  }
+}
 const KIND_ICON = { text: 'T', circle: '●', square: '■', rect: '▬', line: '╱', shape: '◆' };
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -197,8 +246,10 @@ function mountEditor(root, id, close, onDone) {
 
   function setPlaying(on) {
     playing = on;
-    playBtn.replaceChildren(icon(on ? 'pause' : 'play'));
-    playBtn.setAttribute('aria-label', on ? 'пауза' : 'играть');
+    replaceChildren(playBtn, icon(on ? 'pause' : 'play'));
+    playBtn.setAttribute('aria-label', on ? 'Пауза' : 'Старт');
+    playBtn.setAttribute('title', on ? 'Пауза' : 'Старт');
+    playBtn.setAttribute('aria-pressed', String(on));
     playBtn.classList.toggle('is-paused', !on);
     if (anim) { if (on) anim.play(); else anim.pause(); }
   }
@@ -232,17 +283,17 @@ function mountEditor(root, id, close, onDone) {
   }
   const tick = () => { placeBox(); raf = alive ? requestAnimationFrame(tick) : 0; };
 
-  async function showAnim(animationData) {
+  async function showAnim(animationData, mine) {
     const lib = await loadLottie();
-    if (!alive) return;
+    if (!alive || mine !== seq) return;
     const frame = anim ? anim.currentFrame : 0;
     if (anim) anim.destroy();
-    holder.replaceChildren();
+    replaceChildren(holder);
     anim = lib.loadAnimation({ container: holder, renderer: 'svg', loop: true, autoplay: false, animationData,
       rendererSettings: { preserveAspectRatio: 'xMidYMid meet' } });
     scrub.max = String(Math.max(1, Math.round(anim.totalFrames) - 1));
     anim.addEventListener('enterFrame', paintFrame);
-    anim.goToAndStop(frame || 0, true);
+    anim.goToAndStop(Math.min(frame || 0, Math.max(0, anim.totalFrames - 1)), true);
     if (playing) anim.play();
     paintFrame();
   }
@@ -293,7 +344,7 @@ function mountEditor(root, id, close, onDone) {
 
   function paintParts() {
     if (!data) return;
-    partsList.replaceChildren(...data.parts.map((p) => h('button', {
+    replaceChildren(partsList, ...data.parts.map((p) => h('button', {
       class: `ed-part${p.id === selected ? ' is-on' : ''}${edit.parts[p.id] && compact({ parts: { [p.id]: edit.parts[p.id] } }) ? ' is-edited' : ''}`,
       type: 'button', role: 'option', 'aria-selected': String(p.id === selected),
       onclick: () => { haptic.select(); select(p.id === selected ? null : p.id); },
@@ -309,7 +360,7 @@ function mountEditor(root, id, close, onDone) {
   function paintPanel() {
     const part = partById(selected);
     panel.hidden = !part;
-    if (!part) { panel.replaceChildren(); return; }
+    if (!part) { replaceChildren(panel); return; }
     const p = partEdit(part.id);
     const color = colorOf(part);
     const swatch = h('input', { class: 'ed-swatch__input', type: 'color', value: color, 'aria-label': 'цвет детали' });
@@ -326,7 +377,7 @@ function mountEditor(root, id, close, onDone) {
     }, label));
     const row = (label, ...inputs) => h('div', { class: 'ed-row' }, h('span', { class: 'ed-row__label' }, label), h('span', { class: 'ed-row__inputs' }, ...inputs));
     const holoOnly = edit.fx.holo.on && edit.fx.holo.only;
-    panel.replaceChildren(
+    replaceChildren(panel, 
       h('div', { class: 'ed-panel__head' },
         h('b', { class: 'ed-panel__name' }, part.name),
         h('button', { class: 'ed-icon-btn', type: 'button', 'aria-label': 'сбросить деталь', onclick: () => {
@@ -402,7 +453,7 @@ function mountEditor(root, id, close, onDone) {
       ? h('button', { class: 'ed-more', type: 'button', onclick: () => { haptic.select(); colorsOpen = !colorsOpen; paintColors(); } },
         colorsOpen ? 'свернуть' : `ещё ${list.length - 5} ${plural(list.length - 5, 'цвет', 'цвета', 'цветов')}`, icon(colorsOpen ? 'chev-up' : 'chev-down'))
       : null;
-    colorsBox.replaceChildren(...rows, more);
+    replaceChildren(colorsBox, ...rows, ...(more ? [more] : []));
   }
 
   // варианты цветов: тот же набор, повёрнутый по цветовому кругу
@@ -422,7 +473,7 @@ function mountEditor(root, id, close, onDone) {
     chips.push(h('button', { class: 'ed-variant ed-variant--reset', type: 'button', onclick: () => {
       haptic.select(); edit.colors = {}; paintColors(); paintParts(); schedule();
     } }, 'как было'));
-    variantsBox.replaceChildren(...chips);
+    replaceChildren(variantsBox, ...chips);
   }
 
   // ── эффекты
@@ -436,15 +487,28 @@ function mountEditor(root, id, close, onDone) {
   function fxRow(label, on, onChange, settings) {
     const t = Toggle(on, onChange, label);
     return [h('div', { class: 'ed-row ed-row--toggle' }, h('span', { class: 'ed-row__label' }, label), t.el),
-      on && settings ? h('div', { class: 'ed-fx' }, ...settings()) : null];
+      ...(on && settings ? [h('div', { class: 'ed-fx' }, ...settings())] : [])];
   }
   function paintFx() {
     const { pixel, metal, glitch, holo } = edit.fx;
     const holoSettings = () => [
+      h('p', { class: 'ed-note ed-note--top' }, 'Хром находит границы эмодзи и бежит по ним: чёрный, белый и выбранный оттенок переливаются по краю и по контурам.'),
+      // где переливается: по контуру эмодзи (обводки), по заливкам или везде
+      Seg([['contour', 'контур'], ['fill', 'заливки'], ['all', 'всё']], holo.target, (v) => setFx('holo', { target: v }, true)),
+      holo.target !== 'fill' ? h('div', { class: 'ed-row ed-row--toggle ed-row--in' }, h('span', { class: 'ed-row__label' }, 'чёрная основа'),
+        Toggle(holo.dark, (v) => setFx('holo', { dark: v }), 'чёрная основа').el) : null,
+      // хромовая кромка по силуэту стикера; на пиксельной мозаике и на отдельных деталях её нет
+      holo.target !== 'fill' && !holo.only && !pixel.on ? Slider({ label: 'кромка', min: 0, max: 32, value: holo.edge,
+        fmt: (v) => (v ? `${v} px` : 'нет'), onInput: (v) => setFx('holo', { edge: v }) }) : null,
       h('div', { class: 'ed-pal' }, ...PALETTES.map(([pid, c]) => h('button', {
-        class: `ed-pal__dot${holo.palette === pid ? ' is-on' : ''}${c ? '' : ' ed-pal__dot--rainbow'}`, type: 'button',
-        style: c ? { '--c': c } : {}, 'aria-label': pid, onclick: () => { haptic.select(); setFx('holo', { palette: pid }, true); },
+        class: `ed-pal__dot${!holo.tint && holo.palette === pid ? ' is-on' : ''}${c ? '' : ' ed-pal__dot--rainbow'}`, type: 'button',
+        style: c ? { '--c': c } : {}, 'aria-label': pid, onclick: () => { haptic.select(); setFx('holo', { palette: pid, tint: null }, true); },
       }))),
+      h('label', { class: 'ed-row ed-row--in' }, h('span', { class: 'ed-row__label' }, 'свой оттенок'),
+        h('span', { class: 'ed-swatch' }, h('input', { class: 'ed-swatch__input', type: 'color',
+          value: holo.tint || PALETTES.find(([pid]) => pid === holo.palette)?.[1] || '#ff2d55', 'aria-label': 'оттенок хрома',
+          oninput: (e) => { e.target.nextElementSibling.style.setProperty('--c', e.target.value); setFx('holo', { tint: e.target.value }); },
+        }), h('span', { class: 'ed-swatch__dot', style: { '--c': holo.tint || PALETTES.find(([pid]) => pid === holo.palette)?.[1] || '#ff2d55' } }))),
       Seg([['cw', 'по часовой'], ['ccw', 'против']], holo.dir, (v) => setFx('holo', { dir: v })),
       Slider({ label: 'оборотов', min: 1, max: 6, value: holo.turns, onInput: (v) => setFx('holo', { turns: v }) }),
       Slider({ label: 'ширина блика', min: 20, max: 300, step: 5, value: holo.width, fmt: pct, onInput: (v) => setFx('holo', { width: v }) }),
@@ -452,9 +516,10 @@ function mountEditor(root, id, close, onDone) {
       h('div', { class: 'ed-row ed-row--toggle ed-row--in' }, h('span', { class: 'ed-row__label' }, 'глянец на заливках'),
         Toggle(holo.gloss, (v) => setFx('holo', { gloss: v }), 'глянец').el),
     ];
-    fxBox.replaceChildren(
+    replaceChildren(fxBox, 
       ...fxRow('пикселизация', pixel.on, (v) => setFx('pixel', { on: v }, true), () => [
         Slider({ label: 'сетка', min: 8, max: 64, value: pixel.grid, onInput: (v) => setFx('pixel', { grid: v }) }),
+        Slider({ label: 'зазор клеток', min: 0, max: 35, value: pixel.gap, fmt: pct, onInput: (v) => setFx('pixel', { gap: v }) }),
         Seg([['square', 'квадрат'], ['soft', 'мягкий'], ['circle', 'круг']], pixel.shape, (v) => setFx('pixel', { shape: v })),
         Slider({ label: 'кадров/с', min: 4, max: 30, value: pixel.fps, onInput: (v) => setFx('pixel', { fps: v }) }),
         Slider({ label: 'цветов', min: 2, max: 64, value: pixel.colors, fmt: (v) => (v >= 64 ? 'все' : String(v)), onInput: (v) => setFx('pixel', { colors: v }) }),
@@ -496,16 +561,31 @@ function mountEditor(root, id, close, onDone) {
   }
 
   // ── эффект при показе (вместо эффекта по нажатию — его Telegram даёт только своим премиум-стикерам)
-  const burstBox = h('div', { class: 'ed-group' });
+  const burstBox = h('div', { class: 'ed-group ed-burst' });
   function paintBurst() {
     const b = edit.fx.burst;
-    burstBox.replaceChildren(
-      h('div', { class: 'ed-bursts' }, ...BURSTS.map(([kid, label]) => h('button', {
-        class: `ed-anim-btn${b.kind === kid ? ' is-on' : ''}`, type: 'button',
-        onclick: () => { haptic.select(); setFx('burst', { kind: kid }); paintBurst(); replay(); },
-      }, label))),
-      b.kind !== 'none' ? Slider({ label: 'частиц', min: 4, max: 20, value: b.count, onInput: (v) => setFx('burst', { count: v }) }) : null,
-      h('p', { class: 'ed-note' }, 'Эффект по нажатию в Telegram есть только у премиум-стикеров самого Telegram, ботам он недоступен. Поэтому эффект встроен в анимацию: он играет в начале каждого цикла. Нажми на превью, чтобы посмотреть ещё раз.'),
+    const on = b.kind !== 'none';
+    replaceChildren(burstBox,
+      h('div', { class: 'ed-fxpick', role: 'radiogroup', 'aria-label': 'эффект при показе' }, ...BURSTS.map(([kid, label, tint]) => h('button', {
+        class: `ed-fxtile${b.kind === kid ? ' is-on' : ''}${kid === 'none' ? ' ed-fxtile--none' : ''}`, type: 'button',
+        role: 'radio', 'aria-checked': String(b.kind === kid), style: { '--c': (kid !== 'none' && b.color) || tint },
+        onclick: () => {
+          if (b.kind === kid) return;
+          haptic.select(); setFx('burst', { kind: kid }); paintBurst(); replay();
+        },
+      }, burstArt(kid, kid === 'none' ? null : b.color), h('span', { class: 'ed-fxtile__label' }, label)))),
+      on ? h('div', { class: 'ed-fxopts' },
+        Slider({ label: 'частиц', min: 4, max: 20, value: b.count, onInput: (v) => setFx('burst', { count: v }) }),
+        h('div', { class: 'ed-fxopts__row' }, h('span', { class: 'ed-fxopts__label' }, 'цвет'),
+          h('div', { class: 'ed-pal ed-pal--sm' }, ...BURST_COLORS.map((c) => h('button', {
+            class: `ed-pal__dot${(b.color || null) === c ? ' is-on' : ''}${c ? '' : ' ed-pal__dot--rainbow'}`, type: 'button',
+            style: c ? { '--c': c } : {}, 'aria-label': c ? `цвет ${c}` : 'родные цвета',
+            onclick: () => { haptic.select(); setFx('burst', { color: c }); paintBurst(); },
+          })))),
+        h('button', { class: 'ed-fxopts__replay', type: 'button', onclick: () => { haptic.select(); replay(); } }, icon('refresh'), 'посмотреть ещё раз')) : null,
+      h('div', { class: 'ed-hint' },
+        icon('info'),
+        h('span', { class: 'ed-hint__text' }, 'Играет в начале каждого цикла. Эффект «по нажатию» Telegram даёт только своим премиум-стикерам.')),
     );
   }
   const replay = () => { if (anim) { anim.goToAndPlay(0, true); setPlaying(true); } };
@@ -513,9 +593,23 @@ function mountEditor(root, id, close, onDone) {
 
   // ── проверка telegram
   const checksBox = h('div', { class: 'ed-group ed-checks' });
+  const checksId = `ed-checks-${id}`;
+  const checksInner = h('div', { class: 'ed-disclosure__inner' }, checksBox);
+  const checksContent = h('div', { class: 'ed-disclosure__content', id: checksId, 'aria-hidden': 'true', inert: true }, checksInner);
+  const checksToggle = h('button', { class: 'ed-disclosure__toggle', type: 'button', 'aria-expanded': 'false', 'aria-controls': checksId,
+    onclick: () => {
+      haptic.select();
+      const expanded = checksToggle.getAttribute('aria-expanded') !== 'true';
+      checksToggle.setAttribute('aria-expanded', String(expanded));
+      checksContent.setAttribute('aria-hidden', String(!expanded));
+      checksContent.inert = !expanded;
+      checksSection.classList.toggle('is-open', expanded);
+    },
+  }, h('span', null, 'Проверка Telegram'), icon('chev-down'));
+  const checksSection = h('section', { class: 'ed-disclosure' }, checksToggle, checksContent);
   function paintChecks() {
     if (!data) return;
-    checksBox.replaceChildren(...data.checks.map((c) => h('div', { class: `ed-check${c.ok ? '' : ' is-bad'}` },
+    replaceChildren(checksBox, ...data.checks.map((c) => h('div', { class: `ed-check${c.ok ? '' : ' is-bad'}` },
       h('span', { class: 'ed-check__mark' }, icon(c.ok ? 'check' : 'close')),
       h('span', { class: 'ed-check__label' }, c.label),
       h('span', { class: 'ed-check__value' }, c.value))));
@@ -523,28 +617,67 @@ function mountEditor(root, id, close, onDone) {
 
   // ── загрузка превью
   let seq = 0;
-  async function rerender() {
+  let renderTimer = 0;
+  let renderController = null;
+  const previewError = h('div', { class: 'ed-preview-error', hidden: true, role: 'status' },
+    h('span', { class: 'ed-preview-error__text' }),
+    h('button', { type: 'button', onclick: () => rerender(), class: 'ed-preview-error__retry' }, 'Повторить'));
+  stage.append(previewError);
+  // сбой сети, перегрузка или ответ, обогнанный более новым, — повторяем молча; ошибку показываем, только если
+  // и повтор не удался
+  const retryable = (err) => !(err instanceof ApiError) || err.status === 0 || err.status === 429 || err.status >= 500;
+  async function rerender(attempt = 0) {
+    if (!alive) return;
+    clearTimeout(renderTimer);
     const mine = ++seq;
+    if (renderController) renderController.abort();
+    renderController = new AbortController();
     spinner.hidden = false;
+    previewError.hidden = true;
+    let stage = 'load';
+    let retrying = false;
     try {
-      const res = await api.render({ template_id: id, ...renderParams({ ...lookFor(id), edit: compact(edit) }) });
+      const res = await api.render({ template_id: id, ...renderParams({ ...lookFor(id), edit: compact(edit) }) }, renderController.signal);
       if (!alive || mine !== seq) return;
+      stage = 'show';
       data = res;
       if (selected && !partById(selected)) selected = null;
-      await showAnim(res.anim);
+      await showAnim(res.anim, mine);
+      if (!alive || mine !== seq) return;
       paintParts();
       paintPanel();
       paintColors();
       paintVariants();
       paintChecks();
     } catch (err) {
-      if (!alive || mine !== seq) return;
-      toast(err instanceof ApiError && err.code === 'pro_required' ? 'Продвинутые настройки доступны в Pro' : 'Не получилось обновить превью', 'warn');
+      if (!alive || mine !== seq || err.name === 'AbortError') return;
+      if (err instanceof ApiError && err.status === 204) return; // сервер пропустил устаревший запрос
+      if (stage === 'load' && attempt < 2 && retryable(err)) {
+        retrying = true;
+        renderTimer = setTimeout(() => rerender(attempt + 1), err.status === 429 ? 2500 : 700 * (attempt + 1));
+        return;
+      }
+      if (stage === 'show') console.error('editor preview', err);
+      previewError.hidden = false;
+      previewError.querySelector('.ed-preview-error__text').textContent = previewErrorText(err, stage);
     } finally {
-      if (mine === seq) spinner.hidden = true;
+      if (mine === seq && !retrying) spinner.hidden = true;
     }
   }
-  const schedule = debounce(rerender, 220);
+  function previewErrorText(err, stage) {
+    if (stage === 'show') return 'Превью не открылось на этом устройстве. Файл пака соберётся как обычно.';
+    if (!(err instanceof ApiError) || err.status === 0) return 'Нет связи с сервером. Последний кадр сохранён.';
+    if (err.code === 'pro_required') return 'Редактор доступен в Pro';
+    if (err.status === 429) return 'Слишком много изменений подряд. Подожди пару секунд.';
+    if (err.code === 'validation' || err.status === 400 || err.status === 422) return 'Сервер не принял эти настройки. Нажми «сбросить» вверху.';
+    return 'Сервер не смог собрать превью с этими эффектами. Попробуй ещё раз.';
+  }
+  const schedule = () => {
+    ++seq; // устаревший ответ не должен перерисовать текущие настройки
+    if (renderController) renderController.abort();
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(rerender, 300);
+  };
 
   // ── шапка и низ
   const n = state.selection.indexOf(id);
@@ -587,7 +720,7 @@ function mountEditor(root, id, close, onDone) {
       ...Section('все цвета', colorsBox, variantsBtn, variantsBox),
       ...Section('эффекты', fxBox),
       ...Section('эффект при показе', burstBox),
-      ...Section('проверка telegram', checksBox)),
+      checksSection),
     footer));
 
   setPlaying(playing);
@@ -598,6 +731,8 @@ function mountEditor(root, id, close, onDone) {
 
   return () => {
     alive = false;
+    clearTimeout(renderTimer);
+    if (renderController) renderController.abort();
     cancelAnimationFrame(raf);
     if (anim) anim.destroy();
     setItemEdit(id, compact(edit));

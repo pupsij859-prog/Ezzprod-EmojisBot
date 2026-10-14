@@ -30,6 +30,7 @@ class ItemSpec:
     stroke: str | None = None     # обводка '#rrggbb' или None — родной цвет контуров
     size: int = 100               # размер надписи, % (100 — автоподбор)
     edit_json: str = ""           # правки редактора (JSON) или пусто
+    font_path: str = ""           # свой шрифт ника (app/user_fonts.py) или пусто — стандартный
 
 
 class Renderer(Protocol):
@@ -44,7 +45,7 @@ class TemplateRenderer:
         if tpl is None:
             raise ValueError(f"unknown template {spec.template_id}")
         anim = lottie.load(tpl.path)
-        text = fonts.text_drawing(spec.text) if spec.text else None
+        text = fonts.text_drawing(spec.text, spec.font_path or None) if spec.text else None
         color = lottie.hex_to_rgb(spec.color)
         stroke = lottie.hex_to_rgb(spec.stroke)
         edit = json.loads(spec.edit_json) if spec.edit_json else None

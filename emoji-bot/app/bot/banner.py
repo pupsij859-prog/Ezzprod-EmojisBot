@@ -1,4 +1,5 @@
-"""Баннер для /start: «ДОБРО ПОЖАЛОВАТЬ» на фоне гор (контуры рельефа и хребты), знак бренда из аватарки. Pillow."""
+"""Баннер для /start. Основной — готовая картинка webapp/assets/brand/start-banner.jpg («Добро пожаловать» на фоне
+гор). Если её нет, баннер рисуется Pillow: «ДОБРО ПОЖАЛОВАТЬ» на фоне хребтов и знак бренда из аватарки."""
 from __future__ import annotations
 
 import hashlib
@@ -16,6 +17,7 @@ log = logging.getLogger("ezzprod.banner")
 W, H = 1280, 720
 BANNER_VERSION = "4"
 AVATAR = WEBAPP_DIR / "assets" / "brand" / "avatar-clean.jpg"
+START_BANNER = WEBAPP_DIR / "assets" / "brand" / "start-banner.jpg"  # чтобы сменить баннер, замени этот файл
 
 _FONT_CANDIDATES = [
     r"C:\Windows\Fonts\bahnschrift.ttf",
@@ -130,7 +132,9 @@ def render_banner(brand: str) -> Image.Image:
 
 
 def get_banner(settings: Settings) -> Path | None:
-    """Путь к готовому баннеру (создаётся при первом обращении и кэшируется)."""
+    """Путь к готовому баннеру: картинка из проекта, иначе нарисованный (создаётся при первом обращении и кэшируется)."""
+    if START_BANNER.exists():
+        return START_BANNER
     key = hashlib.sha1(
         f"{BANNER_VERSION}|{settings.brand_name}|{AVATAR.stat().st_mtime_ns if AVATAR.exists() else 0}".encode()
     ).hexdigest()[:10]

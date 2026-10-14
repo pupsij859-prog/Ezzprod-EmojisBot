@@ -4,6 +4,7 @@ from __future__ import annotations
 from ..ru import gens
 
 BTN_OPEN = "открыть редактор"
+BTN_OPEN_STYLE = "success"  # цвет кнопки: success — зелёный, primary — синий, danger — красный
 MENU_BUTTON = "открыть"
 
 

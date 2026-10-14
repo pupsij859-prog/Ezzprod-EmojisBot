@@ -19,9 +19,9 @@ export class ApiError extends Error {
   }
 }
 
-async function request(method, path, body, { form = false, headers: extra = {} } = {}) {
+async function request(method, path, body, { form = false, headers: extra = {}, signal } = {}) {
   const headers = { ...authHeaders(), ...extra };
-  const init = { method, headers };
+  const init = { method, headers, signal };
   if (body !== undefined) {
     if (form) {
       init.body = body;
@@ -33,19 +33,21 @@ async function request(method, path, body, { form = false, headers: extra = {} }
   let res;
   try {
     res = await fetch(`/api${path}`, init);
-  } catch {
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
     serverGone();
     throw new ApiError(0, { code: 'network' });
   }
   // подпись Telegram истекла (initData живёт сутки) — сообщаем приложению, где бы это ни случилось
   if (res.status === 401) window.dispatchEvent(new CustomEvent('ez:session-expired'));
   let data = null;
-  try { data = await res.json(); } catch {}
+  try { data = await res.json(); } catch (err) { if (err.name === 'AbortError') throw err; }
   if (!res.ok && data === null && res.status >= 502) serverGone();
   if (!res.ok) {
     const detail = data && data.detail;
     throw new ApiError(res.status, typeof detail === 'object' && detail ? detail : { code: `http_${res.status}` });
   }
+  if (data === null) throw new ApiError(res.status, { code: 'invalid_response' });
   return data;
 }
 
@@ -64,10 +66,17 @@ export const api = {
   deleteLogo: (id) => request('DELETE', `/logos/${encodeURIComponent(id)}`),
   // векторный логотип для живого превью (после перезапуска приложения)
   logoVector: (id) => request('GET', `/logos/${encodeURIComponent(id)}/vector`),
-  // ник как контуры букв — для живого превью шаблонов
-  glyphs: (text) => request('POST', '/glyphs', { text }),
+  // свой шрифт ника (.ttf)
+  uploadFont(file) {
+    const form = new FormData();
+    form.append('file', file);
+    return request('POST', '/fonts', form, { form: true });
+  },
+  deleteFont: (id) => request('DELETE', `/fonts/${encodeURIComponent(id)}`),
+  // ник как контуры букв (fontId — свой шрифт, null — стандартный) — для живого превью шаблонов
+  glyphs: (text, fontId = null) => request('POST', '/glyphs', { text, font_id: fontId }),
   // продвинутый редактор (Pro): готовая анимация с правками, части эмодзи, цвета и проверка под Telegram
-  render: (body) => request('POST', '/render', body),
+  render: (body, signal) => request('POST', '/render', body, { signal }),
   // idempotencyKey: повтор запроса с тем же ключом не спишет генерации второй раз
   createPack: (body, idempotencyKey) =>
     request('POST', '/packs', body, { headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {} }),
@@ -93,7 +102,8 @@ export const api = {
 };
 
 /** Статичная картинка шаблона (assets/thumbs, кадр анимации). Анимацию с ником показывает js/tgs.js. */
-const PREVIEW_VERSION = '1'; // меняй при обновлении картинок, чтобы сбросить кэш браузера
+// меняй при обновлении шаблонов или их картинок, чтобы сбросить кэш браузера (картинки и файлы .tgs)
+export const PREVIEW_VERSION = '2';
 export const previewUrl = (templateId) => `assets/thumbs/${encodeURIComponent(templateId)}.webp?v=${PREVIEW_VERSION}`;
 
 export function newIdempotencyKey() {

@@ -6,7 +6,7 @@ import {
 import { openOverlay } from '../nav.js';
 import { refreshMe, state } from '../store.js';
 import { confirmAction, copyText, haptic, openLink } from '../tg.js';
-import { debounce, displayName, emojiWord, gens, h, icon, plural, toast } from '../ui.js';
+import { debounce, displayName, emojiWord, gens, h, icon, plural, replaceChildren, toast } from '../ui.js';
 
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 const date = (ts) => { const d = new Date(ts * 1000); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
@@ -39,13 +39,13 @@ function Stat({ glow, iconName, value, label, sub }) {
 
 function Segmented(options, value, onChange) {
   const buttons = options.map((o) => h('button', {
-    class: `segmented__btn${o.id === value ? ' is-active' : ''}`, type: 'button', role: 'tab', dataset: { id: o.id },
+    class: `segmented__btn${o.id === value ? ' is-active' : ''}`, type: 'button', role: 'tab', 'aria-selected': String(o.id === value), dataset: { id: o.id },
     onclick: () => {
       if (o.id === value) return;
       haptic.select();
       value = o.id;
       el.dataset.index = String(options.findIndex((x) => x.id === value));
-      buttons.forEach((b) => b.classList.toggle('is-active', b.dataset.id === value));
+      buttons.forEach((b) => { b.classList.toggle('is-active', b.dataset.id === value); b.setAttribute('aria-selected', String(b.dataset.id === value)); });
       onChange(value);
     },
   }, o.label));
@@ -61,20 +61,24 @@ function PagedList({ load, renderItem, empty }) {
   const box = h('div', { class: 'alist-box' }, list, more);
   let offset = 0;
   let token = 0;
+  let alive = true;
+  let loading = false;
   more.hidden = true;
 
   async function next(reset = false) {
+    if (!alive || (loading && !reset)) return null;
     const mine = reset ? ++token : token;
+    loading = true;
     if (reset) {
       offset = 0;
-      list.replaceChildren(Skeleton('skeleton--line'), Skeleton('skeleton--line'), Skeleton('skeleton--line'));
+      replaceChildren(list, Skeleton('skeleton--line'), Skeleton('skeleton--line'), Skeleton('skeleton--line'));
       more.hidden = true;
     }
     setBusy(more, true);
     try {
       const data = await load(offset);
       if (mine !== token) return null;
-      if (reset) list.replaceChildren();
+      if (reset) replaceChildren(list);
       list.append(...data.items.map(renderItem));
       offset += data.items.length;
       more.hidden = !data.more;
@@ -82,13 +86,13 @@ function PagedList({ load, renderItem, empty }) {
       return data;
     } catch {
       if (mine !== token) return null;
-      list.replaceChildren(ErrorState({ onRetry: () => next(true) }));
+      replaceChildren(list, ErrorState({ onRetry: () => next(true) }));
       return null;
     } finally {
-      setBusy(more, false);
+      if (mine === token) { loading = false; setBusy(more, false); }
     }
   }
-  return { el: box, reload: () => next(true) };
+  return { el: box, reload: () => next(true), destroy: () => { alive = false; ++token; } };
 }
 
 // ───────────────────────── платежи ─────────────────────────
@@ -159,7 +163,7 @@ function PaymentsSection() {
     empty: 'Платежей нет',
   });
   list.reload();
-  return h('div', { class: 'asection' }, chips.el, list.el);
+  return { el: h('div', { class: 'asection' }, chips.el, list.el), destroy: list.destroy };
 }
 
 // ───────────────────────── пользователи ─────────────────────────
@@ -184,7 +188,7 @@ function openUser(userId, onChanged) {
 
       async function load() {
         let u;
-        try { u = await api.admin.user(userId); } catch { body.replaceChildren(ErrorState({ onRetry: load })); return; }
+        try { u = await api.admin.user(userId); } catch { replaceChildren(body, ErrorState({ onRetry: load })); return; }
         title.textContent = displayName(u) || `id ${u.id}`;
         const stepper = Stepper({ value: 5, min: 1, max: 10000 });
         const act = (sign) => async () => {
@@ -203,7 +207,7 @@ function openUser(userId, onChanged) {
             toast(err instanceof ApiError && err.status === 402 ? 'Столько генераций на балансе нет' : 'Не получилось', 'warn');
           }
         };
-        body.replaceChildren(
+        replaceChildren(body, 
           Group(
             Row({ label: 'Баланс', value: gens(u.balance), chevron: false }),
             Row({ label: 'Тариф', value: u.plan === 'pro' ? 'Pro' : 'Бесплатный' }),
@@ -245,8 +249,8 @@ function UsersSection() {
   input.addEventListener('input', debounce(() => { q = input.value.trim(); list.reload(); }, 300));
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
   list.reload();
-  return h('div', { class: 'asection' },
-    h('label', { class: 'asearch' }, icon('search', 'asearch__icon'), input), total, list.el);
+  return { el: h('div', { class: 'asection' },
+    h('label', { class: 'asearch' }, icon('search', 'asearch__icon'), input), total, list.el), destroy: list.destroy };
 }
 
 // ───────────────────────── паки ─────────────────────────
@@ -274,7 +278,7 @@ function PacksSection() {
     empty: 'Паков нет',
   });
   list.reload();
-  return h('div', { class: 'asection' }, chips.el, list.el);
+  return { el: h('div', { class: 'asection' }, chips.el, list.el), destroy: list.destroy };
 }
 
 // ───────────────────────── вкладка ─────────────────────────
@@ -284,16 +288,23 @@ export function mountAdmin(container) {
   const stats = h('div', { class: 'astats' }, ...Array.from({ length: 4 }, () => Skeleton('astat astat--skeleton')));
   const sectionBox = h('div');
   const sections = { payments: PaymentsSection, users: UsersSection, packs: PacksSection };
-  const show = (id) => { sectionBox.replaceChildren(sections[id]()); };
+  let section = null;
+  const show = (id) => {
+    if (section) section.destroy();
+    section = sections[id]();
+    replaceChildren(sectionBox, section.el);
+  };
   const refresh = h('button', { class: 'catpill', type: 'button', 'aria-label': 'обновить', onclick: () => { haptic.tap(); loadStats(); show(current); } },
     h('span', null, 'Обновить'), icon('refresh', 'catpill__chev'));
   let current = 'payments';
+  let statsSeq = 0;
 
   async function loadStats() {
+    const mine = ++statsSeq;
     try {
       const s = await api.admin.stats();
-      if (!alive) return;
-      stats.replaceChildren(
+      if (!alive || mine !== statsSeq) return;
+      replaceChildren(stats, 
         Stat({ glow: 'var(--glow-gold)', iconName: 'star', value: num(s.revenue.today), label: 'Stars сегодня',
           sub: `7 дней: ${num(s.revenue.week)} · всего: ${num(s.revenue.total)}` }),
         Stat({ glow: 'var(--glow-green)', iconName: 'users', value: num(s.users.total), label: 'Пользователи',
@@ -303,7 +314,7 @@ export function mountAdmin(container) {
         Stat({ glow: s.review ? 'var(--glow-rust)' : 'var(--glow-olive)', iconName: 'sparkle', value: num(s.gens.sold), label: 'Генераций продано',
           sub: `на балансах ${num(s.gens.on_balance)}${s.review ? ` · спорных ${s.review}` : ''}` }));
     } catch {
-      if (alive) stats.replaceChildren(ErrorState({ onRetry: loadStats }));
+      if (alive && mine === statsSeq) replaceChildren(stats, ErrorState({ onRetry: loadStats }));
     }
   }
 
@@ -318,5 +329,5 @@ export function mountAdmin(container) {
 
   loadStats();
   show(current);
-  return () => { alive = false; };
+  return () => { alive = false; if (section) section.destroy(); };
 }

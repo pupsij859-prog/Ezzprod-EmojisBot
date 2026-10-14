@@ -237,8 +237,9 @@ def _contour_to_path(points: list[tuple[float, float, bool]], ox: float) -> dict
     return {"v": [r(x) for x in v], "i": [r(x) for x in ins], "o": [r(x) for x in outs], "c": True}
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=32)
 def load_font(path: str | None = None) -> TrueTypeFont:
+    """Шрифт по пути; если файла нет или он не читается — шрифт по умолчанию."""
     explicit = path or os.environ.get("TEMPLATE_FONT", "")
     for candidate in ([Path(explicit)] if explicit else []) + list(CANDIDATES):
         try:
@@ -250,8 +251,8 @@ def load_font(path: str | None = None) -> TrueTypeFont:
 
 
 @lru_cache(maxsize=2048)
-def _text_drawing(text: str) -> tuple:
-    font = load_font()
+def _text_drawing(text: str, font_path: str | None = None) -> tuple:
+    font = load_font(font_path)
     paths, x = [], 0.0
     fallback = font.glyph_id("?")
     for ch in text:
@@ -268,12 +269,18 @@ def _text_drawing(text: str) -> tuple:
     return (tuple(paths), (min(xs), min(ys), max(xs), max(ys)))
 
 
-def text_drawing(text: str) -> dict | None:
-    """Надпись как векторный рисунок (None — пусто). Цвет None: красится цветом надписи шаблона."""
+def text_drawing(text: str, font_path: str | None = None) -> dict | None:
+    """Надпись как векторный рисунок (None — пусто). Цвет None: красится цветом надписи шаблона.
+    font_path — свой шрифт пользователя (TrueType); None — шрифт по умолчанию."""
     text = " ".join(text.split())
     if not text:
         return None
-    res = _text_drawing(text)
+    try:
+        res = _text_drawing(text, str(font_path) if font_path else None)
+    except (FontError, struct.error, IndexError, ValueError):
+        if not font_path:
+            raise
+        res = _text_drawing(text, None)  # свой шрифт оказался битым внутри — рисуем стандартным
     if not res:
         return None
     paths, bbox = res

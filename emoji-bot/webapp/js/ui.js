@@ -1,7 +1,7 @@
 // Мелкие помощники для DOM. Весь пользовательский текст попадает в DOM только через textContent.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const ICONS_VERSION = '6'; // меняй при правке assets/icons.svg: спрайт кэшируется браузером на час
+const ICONS_VERSION = '7'; // меняй при правке assets/icons.svg: спрайт кэшируется браузером на час
 
 function append(el, children) {
   for (const child of children) {
@@ -31,6 +31,11 @@ export function h(tag, props, ...children) {
   }
   append(el, children);
   return el;
+}
+
+/** DOM.replaceChildren превращает null/false в видимый текст. Условные элементы обрабатываем как в h(). */
+export function replaceChildren(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((child) => child != null && child !== false));
 }
 
 export function icon(name, cls = '') {

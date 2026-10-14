@@ -7,3 +7,10 @@ __pycache__/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+
+# временные артефакты проверок интерфейса
+.ui-test-temp*/
+.ui-tests-*/
+.ui-preview/
+tools/.ui_preview.py
+docs/ui-preview/

@@ -58,7 +58,8 @@ def open_keyboard(ctx: Context) -> InlineKeyboardMarkup | None:
     if not url.startswith("https://"):
         return None  # Telegram принимает web_app-кнопки только с https
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_OPEN, web_app=WebAppInfo(url=url))]]
+        # цветная кнопка (Bot API 9.4): Telegram даёт три цвета — success (зелёный), primary (синий), danger (красный)
+        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_OPEN, web_app=WebAppInfo(url=url), style=texts.BTN_OPEN_STYLE)]]
     )
 
 

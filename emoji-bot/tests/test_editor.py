@@ -145,6 +145,74 @@ def test_short_nick_is_bigger_than_long_one():
     assert px("Kot", 0.5) < px("Kot") < px("Kot", 1.4)
 
 
+def test_holo_on_contour_makes_gradient_strokes_and_dark_base():
+    anim = base_anim()
+    out, data = editor.render(anim, editor.clean_edit({"fx": {"holo": {"on": True}}}))  # по умолчанию — контур
+    raw = json.dumps(out)
+    assert '"ty": "gs"' in raw and '"ty": "gf"' not in raw
+    assert len(data) <= lottie.TG_LIMIT
+    _fill, stroke = lottie.main_colors(anim)
+    kept = {c["hex"] for c in editor.colors(out)}
+    assert kept <= {"#0a0a0d", editor.to_hex(stroke)} | {c["hex"] for c in editor.colors(anim) if c["hex"] == editor.to_hex(stroke)}
+    light = editor.render(anim, editor.clean_edit({"fx": {"holo": {"on": True, "dark": False}}}))[0]
+    assert {c["hex"] for c in editor.colors(light)} - {editor.to_hex(stroke)}  # без чёрной основы цвета на месте
+    both = json.dumps(editor.render(anim, editor.clean_edit({"fx": {"holo": {"on": True, "target": "all"}}}))[0])
+    assert '"ty": "gs"' in both and '"ty": "gf"' in both
+
+
+def test_bw_tool_makes_colors_gray_and_is_idempotent():
+    from tools.bw_templates import to_bw
+
+    anim = copy.deepcopy(lottie.load(catalog.get("classic-002").path))
+    assert to_bw(anim) is True
+    assert all(c["hex"][1:3] == c["hex"][3:5] == c["hex"][5:7] for c in editor.colors(anim))  # r = g = b
+    assert to_bw(anim) is False  # второй раз менять нечего
+
+
+# ───────────── свой шрифт ника ─────────────
+
+def system_ttf() -> bytes:
+    path = next(p for p in fonts.CANDIDATES if p.is_file())
+    return path.read_bytes()
+
+
+def test_font_upload_glyphs_and_pack(client):
+    h = dev(930)
+    client.post("/api/dev/pay", json={"qty": 2}, headers=h)
+    r = client.post("/api/fonts", files={"file": ("Мой шрифт.ttf", system_ttf(), "font/ttf")}, headers=h)
+    assert r.status_code == 201, r.text
+    font = r.json()
+    assert font["name"] == "Мой шрифт" and len(font["id"]) == 32
+    plain = client.post("/api/glyphs", json={"text": "Kot"}, headers=h).json()["drawing"]
+    own = client.post("/api/glyphs", json={"text": "Kot", "font_id": font["id"]}, headers=h).json()["drawing"]
+    assert plain and own
+    # чужой шрифт нельзя ни в превью, ни в пак
+    assert client.post("/api/glyphs", json={"text": "Kot", "font_id": font["id"]}, headers=dev(931)).status_code == 404
+    body = {"type": "emoji", "template_ids": [TEMPLATE], "text": "Kot", "font_id": font["id"]}
+    r = client.post("/api/packs", json=body, headers=dev(931))
+    assert r.status_code in (402, 422)
+    assert client.post("/api/packs", json=body, headers=h).status_code == 201
+    assert client.delete(f"/api/fonts/{font['id']}", headers=h).json() == {"ok": True}
+
+
+@pytest.mark.parametrize("data, field", [
+    (b"OTTO" + b"\0" * 64, "font_otf"),
+    (b"wOFF" + b"\0" * 64, "font_web"),
+    (b"not a font at all", "font_invalid"),
+])
+def test_font_upload_rejects_unsupported(client, data, field):
+    r = client.post("/api/fonts", files={"file": ("x.ttf", data, "font/ttf")}, headers=dev(940))
+    assert r.status_code == 422 and r.json()["detail"]["field"] == field
+
+
+def test_renderer_uses_own_font(tmp_path):
+    path = tmp_path / "f.ttf"
+    path.write_bytes(system_ttf())
+    spec = dict(template_id=TEMPLATE, kind="emoji", text="Kot", color=None)
+    assert TemplateRenderer().render(ItemSpec(**spec, font_path=str(path)))
+    assert fonts.text_drawing("Kot", str(tmp_path / "нет.ttf")) == fonts.text_drawing("Kot")  # файла нет — стандартный
+
+
 # ───────────── доступ: только Pro ─────────────
 
 def test_render_endpoint_is_pro_only(client):

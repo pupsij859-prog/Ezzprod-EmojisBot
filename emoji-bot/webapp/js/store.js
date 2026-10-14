@@ -33,12 +33,13 @@ export const state = {
   color: null, // «Заливка» — основной цвет стикера '#rrggbb'; null — родной у каждого шаблона
   stroke: null, // «Обводка» — контуры и надпись '#rrggbb'; null — родные
   size: 100, // «Размер надписи», % (100 — автоподбор по длине ника)
+  font: null, // свой шрифт ника {id, name}; null — стандартный
   // свои настройки отдельных стикеров поверх общих: id шаблона → {text?, logo?, color?, stroke?, size?, edit?}
   // edit — правки продвинутого редактора (Pro), бывают только у отдельных стикеров: части у шаблонов свои
   overrides: {},
 };
 
-export const LOOK_KEYS = ['text', 'logo', 'color', 'stroke', 'size'];
+export const LOOK_KEYS = ['text', 'logo', 'color', 'stroke', 'size', 'font'];
 
 /** Итоговые настройки стикера: свои, если заданы, иначе общие (+ правки редактора, если есть). */
 export function lookFor(id) {
@@ -82,6 +83,11 @@ export function setLookForAll(patch) {
   bus.emit('personalization');
 }
 
+/** Используется ли свой шрифт ещё где-то (общие настройки или отдельные стикеры). */
+export const fontInUse = (fontId) => Boolean(fontId) && (
+  (state.font && state.font.id === fontId)
+  || Object.values(state.overrides).some((o) => o.font && o.font.id === fontId));
+
 /** Используется ли логотип ещё где-то (общие настройки или отдельные стикеры). */
 export const logoInUse = (logoId) => Boolean(logoId) && (
   (state.logo && state.logo.id === logoId)
@@ -111,6 +117,8 @@ function ensureLogoVector(logo) {
     bus.emit('personalization');
   });
 }
+
+const cleanFont = (f) => (f && /^[0-9a-f]{32}$/.test(f.id) ? { id: f.id, name: String(f.name || 'шрифт').slice(0, 48) } : null);
 
 const cleanSize = (v) => (Number.isFinite(v) ? Math.max(40, Math.min(160, Math.round(v))) : 100);
 
@@ -149,6 +157,7 @@ export function loadPrefs() {
     if (HEX.test(p.color)) state.color = p.color;
     if (HEX.test(p.stroke)) state.stroke = p.stroke;
     state.size = cleanSize(p.size);
+    state.font = cleanFont(p.font);
     state.logo = cleanLogo(p.logo);
     ensureLogoVector(state.logo);
     // свои настройки — только у стикеров, которые всё ещё выбраны
@@ -161,6 +170,7 @@ export function loadPrefs() {
         if ('color' in raw) own.color = HEX.test(raw.color) ? raw.color : null;
         if ('stroke' in raw) own.stroke = HEX.test(raw.stroke) ? raw.stroke : null;
         if ('size' in raw) own.size = cleanSize(raw.size);
+        if ('font' in raw) own.font = cleanFont(raw.font);
         // правки редактора проверяет сервер; здесь только форма
         if (raw.edit && typeof raw.edit === 'object' && !Array.isArray(raw.edit)) own.edit = raw.edit;
         if ('logo' in raw) { own.logo = cleanLogo(raw.logo); ensureLogoVector(own.logo); }
@@ -174,14 +184,14 @@ export function loadPrefs() {
 
 export function savePrefs() {
   try {
-    const { category, type, selection, text, color, stroke, size } = state;
+    const { category, type, selection, text, color, stroke, size, font } = state;
     const overrides = {};
     Object.entries(state.overrides).forEach(([id, own]) => {
       overrides[id] = { ...own };
       if ('logo' in own) overrides[id].logo = logoMeta(own.logo);
     });
     localStorage.setItem(prefsKey(), JSON.stringify({
-      category, type, selection, text, color, stroke, size, logo: logoMeta(state.logo), overrides,
+      category, type, selection, text, color, stroke, size, font, logo: logoMeta(state.logo), overrides,
     }));
   } catch {}
 }

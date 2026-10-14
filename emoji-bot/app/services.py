@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 import time
@@ -161,19 +162,20 @@ def validate_pack_request(settings: Settings, body: dict) -> dict:
         "color": color,
         "stroke": stroke,
         "size": clean_size(body.get("size")),
+        "font_id": clean_logo_id(body.get("font_id"), "font"),
         "overrides": clean_overrides(settings, body.get("overrides"), ids),
     }
 
 
-ITEM_KEYS = ("text", "logo_id", "color", "stroke", "size", "edit")
-PACK_KEYS = ("text", "logo_id", "color", "stroke", "size")
+ITEM_KEYS = ("text", "logo_id", "color", "stroke", "size", "font_id", "edit")
+PACK_KEYS = ("text", "logo_id", "color", "stroke", "size", "font_id")
 
 
 def clean_size(value) -> int:
     """«Размер надписи», % (100 — автоподбор по длине ника)."""
     if value in (None, ""):
         return 100
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValidationFailed("size")
     return int(max(40, min(160, round(value))))
 
@@ -192,11 +194,12 @@ def has_edits(req: dict) -> bool:
     return any(o.get("edit") for o in (req.get("overrides") or {}).values())
 
 
-def clean_logo_id(value) -> str | None:
+def clean_logo_id(value, field: str = "logo") -> str | None:
+    """id загруженного файла (логотипа или шрифта): 32 hex-символа или None."""
     if value in (None, ""):
         return None
     if not (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)):
-        raise ValidationFailed("logo")
+        raise ValidationFailed(field)
     return value
 
 
@@ -219,6 +222,8 @@ def clean_overrides(settings: Settings, raw, ids: list[str]) -> dict[str, dict]:
             clean["text"] = clean_text(item["text"], settings.text_max)
         if "logo_id" in item:
             clean["logo_id"] = clean_logo_id(item["logo_id"])
+        if "font_id" in item:
+            clean["font_id"] = clean_logo_id(item["font_id"], "font")
         for key in ("color", "stroke"):
             if key in item:
                 clean[key] = clean_color(item[key])
@@ -263,6 +268,11 @@ async def create_pack(
             logo = await t.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (logo_id, user_id))
             if logo is None:
                 raise ValidationFailed("logo")
+        font_ids = {req.get("font_id"), *(o.get("font_id") for o in overrides.values())} - {None}
+        for font_id in font_ids:  # шрифт — только свой
+            font = await t.fetchone("SELECT 1 FROM fonts WHERE id=? AND user_id=?", (font_id, user_id))
+            if font is None:
+                raise ValidationFailed("font")
         user = await t.fetchone("SELECT balance, plan FROM users WHERE id=?", (user_id,))
         if user is None:
             raise ValidationFailed("user")

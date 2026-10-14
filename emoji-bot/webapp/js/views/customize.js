@@ -5,7 +5,7 @@ import { BigEmoji, Button, Group, Row, SectionTitle, setBusy } from '../componen
 import { mountCrtWarp } from '../crt.js';
 import { openOverlay } from '../nav.js';
 import {
-  bus, clearSelection, DEFAULT_COLOR, DEFAULT_STROKE, editFor, hasOwnLook, logoInUse, lookFor, refreshMe, setItemLook, setLookForAll,
+  bus, clearSelection, DEFAULT_COLOR, DEFAULT_STROKE, editFor, fontInUse, hasOwnLook, logoInUse, lookFor, refreshMe, setItemLook, setLookForAll,
   setType, state, toggleSelection,
 } from '../store.js';
 import { haptic, tgUser } from '../tg.js';
@@ -22,6 +22,15 @@ const LOGO_ERRORS = {
   logo_invalid: 'Не получилось прочитать картинку',
   logo_animated: 'Анимированные картинки не подходят, загрузи обычную',
   logo_quota: 'Слишком много загруженных логотипов',
+};
+
+const FONT_ERRORS = {
+  font_otf: 'Этот шрифт в формате OpenType (CFF). Нужен .ttf',
+  font_web: 'Это веб-шрифт (woff). Нужен .ttf',
+  font_invalid: 'Не получилось прочитать шрифт. Нужен .ttf',
+  font_empty: 'В шрифте нет обычных букв',
+  font_too_big: 'Файл шрифта слишком большой',
+  font_quota: 'Слишком много загруженных шрифтов: убери ненужные',
 };
 
 function Segmented(options, value, onChange) {
@@ -225,7 +234,7 @@ function mountOrder(container, close) {
     let scope = 'all';                 // 'all' — все стикеры, 'one' — только стикер в витрине
     const editsOne = () => scope === 'one' && state.selection.length > 1;
     const cur = () => (editsOne() ? lookFor(focusId)
-      : { text: state.text, logo: state.logo, color: state.color, stroke: state.stroke, size: state.size });
+      : { text: state.text, logo: state.logo, color: state.color, stroke: state.stroke, size: state.size, font: state.font });
     const setLook = (patch) => (editsOne() ? setItemLook(focusId, patch) : setLookForAll(patch));
 
     // ── живое превью: у каждого стикера свои ник, логотип и цвета
@@ -343,6 +352,47 @@ function mountOrder(container, close) {
       paintLogo(false);
     });
 
+    // ── свой шрифт ника: .ttf с компьютера/телефона; пусто — стандартный
+    const fontFile = h('input', { type: 'file', accept: '.ttf,font/ttf,application/x-font-ttf,.otf', hidden: true });
+    const fontValue = h('span', { class: 'row__value' });
+    const fontRow = h('button', { class: 'row row--action', type: 'button', onclick: () => {
+      if (cur().font) return;
+      fontFile.click();
+    } },
+    h('span', { class: 'row__main' }, h('span', { class: 'row__label' }, 'Шрифт')), fontValue);
+    const fontRemove = h('button', { class: 'logo-remove', type: 'button', 'aria-label': 'вернуть стандартный шрифт', onclick: (e) => {
+      e.stopPropagation();
+      const removed = cur().font;
+      setLook({ font: null });
+      paintFont();
+      if (removed && !fontInUse(removed.id)) api.deleteFont(removed.id).catch(() => {});
+    } }, icon('close'));
+    function paintFont(busy) {
+      fontValue.replaceChildren();
+      fontRow.classList.toggle('is-busy', Boolean(busy));
+      if (busy) { fontValue.append(h('span', { class: 'spinner', 'aria-label': 'загружаем' })); return; }
+      const font = cur().font;
+      if (font) fontValue.append(h('span', { class: 'logo-name' }, font.name), fontRemove);
+      else fontValue.append(h('span', null, 'стандартный'), icon('chev-right', 'row__chev'));
+    }
+    fontFile.addEventListener('change', async () => {
+      const f = fontFile.files && fontFile.files[0];
+      fontFile.value = '';
+      if (!f) return;
+      if (f.size > limits.font_max_bytes) { haptic.error(); toast(FONT_ERRORS.font_too_big, 'warn'); return; }
+      paintFont(true);
+      try {
+        const font = await api.uploadFont(f);
+        setLook({ font });
+        haptic.success();
+      } catch (err) {
+        haptic.error();
+        const field = err instanceof ApiError ? (err.code === 'too_large' ? 'font_too_big' : err.detail.field) : null;
+        toast(FONT_ERRORS[field] || 'Не получилось загрузить шрифт', 'warn');
+      }
+      paintFont(false);
+    });
+
     // ── сохранённые стили (pro) — применяются ко всем стикерам
     const stylesRow = Row({
       label: 'Сохранённые стили', pro: state.me.plan !== 'pro',
@@ -376,6 +426,7 @@ function mountOrder(container, close) {
         ? `стикер ${state.selection.indexOf(focusId) + 1}${edited ? ' · есть правки' : ''}`
         : (edited ? 'есть правки' : 'части, цвета и эффекты');
       paintLogo(false);
+      paintFont(false);
       fillRow.paint();
       strokeRow.paint();
     }
@@ -422,6 +473,7 @@ function mountOrder(container, close) {
           template_ids: state.selection,
           text: state.text,
           logo_id: state.logo ? state.logo.id : null,
+          font_id: state.font ? state.font.id : null,
           color: state.color,
           stroke: state.stroke,
           size: state.size,
@@ -459,6 +511,7 @@ function mountOrder(container, close) {
         if ('size' in own) item.size = own.size;
         if (own.edit && state.me.plan === 'pro') item.edit = own.edit;
         if ('logo' in own) item.logo_id = own.logo ? own.logo.id : null;
+        if ('font' in own) item.font_id = own.font ? own.font.id : null;
         out[id] = item;
       });
       return out;
@@ -471,7 +524,7 @@ function mountOrder(container, close) {
       picked,
       SectionTitle('Тип пака'), seg.el, premiumNote,
       persHead,
-      Group(textRow, sizeRow, logoRow, fillRow.el, strokeRow.el, stylesRow, file),
+      Group(textRow, sizeRow, fontRow, logoRow, fillRow.el, strokeRow.el, stylesRow, file, fontFile),
       h('div', { class: 'gap' }),
       Group(advancedRow),
       h('div', { class: 'checkout' }, summary, cta));

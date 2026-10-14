@@ -154,6 +154,16 @@ CREATE TABLE IF NOT EXISTS admins (
     4: """
 ALTER TABLE pack_items ADD COLUMN params TEXT;
 """,
+    # v5: свои шрифты для ника (app/user_fonts.py)
+    5: """
+CREATE TABLE IF NOT EXISTS fonts (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    name        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fonts_user ON fonts (user_id);
+""",
 }
 
 

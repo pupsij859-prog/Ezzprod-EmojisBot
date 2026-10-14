@@ -1,10 +1,10 @@
 // Шаблоны TGS в Mini App: загрузка, живое превью и проигрывание (lottie-web).
 // Подстановка ника/логотипа и цвета — порт app/lottie.py: меняй их вместе, тогда превью совпадает с паком.
-import { api, previewUrl } from './api.js';
+import { api, PREVIEW_VERSION, previewUrl } from './api.js';
 import { lookFor, state } from './store.js';
 import { h, prefersReducedMotion } from './ui.js';
 
-const LOTTIE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie_light.min.js';
+const LOTTIE_URL = 'js/vendor/lottie_light.min.js?v=5.12.2';
 const SLOT = 'ezzprod color';
 const LOGO_HEIGHT = 1.9;
 const GAP = 0.18;
@@ -26,9 +26,10 @@ export function loadLottie() {
     const s = document.createElement('script');
     s.src = LOTTIE_URL;
     s.async = true;
-    s.crossOrigin = 'anonymous';
-    s.onload = () => (window.lottie ? resolve(window.lottie) : reject(new Error('lottie')));
-    s.onerror = () => { lottieLib = null; reject(new Error('lottie')); };
+    const failed = () => { clearTimeout(timer); s.remove(); lottieLib = null; reject(new Error('lottie')); };
+    const timer = setTimeout(failed, 15000);
+    s.onload = () => { clearTimeout(timer); if (window.lottie) resolve(window.lottie); else failed(); };
+    s.onerror = failed;
     document.head.append(s);
   });
   return lottieLib;
@@ -39,7 +40,8 @@ export function loadLottie() {
 const templates = new Map();
 export function loadTemplate(id) {
   if (!templates.has(id)) {
-    const p = fetch(`/api/templates/${encodeURIComponent(id)}.tgs`).then((r) => {
+    // версия в адресе: файлы шаблонов кэшируются на сутки, после перекраски их нужно скачать заново
+    const p = fetch(`/api/templates/${encodeURIComponent(id)}.tgs?v=${PREVIEW_VERSION}`).then((r) => {
       if (!r.ok) throw new Error(`template ${r.status}`);
       return r.json();
     });
@@ -282,16 +284,17 @@ export const hexToRgb = (hex) => (hex ? [1, 3, 5].map((i) => parseInt(hex.slice(
 
 // ── ник как векторный рисунок (контуры букв считает сервер тем же шрифтом, что и сборщик)
 const glyphCache = new Map();
-export function textDrawing(text) {
+export function textDrawing(text, fontId = null) {
   const t = (text || '').trim();
   if (!t) return Promise.resolve(null);
-  if (!glyphCache.has(t)) {
-    const p = api.glyphs(t).then((r) => r.drawing || null);
-    p.catch(() => glyphCache.delete(t));
-    glyphCache.set(t, p);
+  const key = `${fontId || ''}|${t}`;
+  if (!glyphCache.has(key)) {
+    const p = api.glyphs(t, fontId).then((r) => r.drawing || null);
+    p.catch(() => glyphCache.delete(key));
+    glyphCache.set(key, p);
     if (glyphCache.size > 60) glyphCache.delete(glyphCache.keys().next().value);
   }
-  return glyphCache.get(t);
+  return glyphCache.get(key);
 }
 
 /** Текущие настройки пользователя → параметры personalize (own: true — цвет из выбора пользователя). */
@@ -305,7 +308,7 @@ export function lookOf(id) {
 }
 
 async function lookFromParams(p, own) {
-  const text = await textDrawing(p.text).catch(() => null);
+  const text = await textDrawing(p.text, p.font ? p.font.id : null).catch(() => null);
   const logo = p.logo && p.logo.vector ? p.logo.vector : null;
   return {
     text, logo, color: own ? hexToRgb(p.color) : null, stroke: own ? hexToRgb(p.stroke) : null, size: textSize(p.size),
@@ -318,7 +321,7 @@ async function lookFromParams(p, own) {
 export function renderParams(p) {
   return {
     text: (p.text || '').trim(), logo_id: p.logo ? p.logo.id : null, color: p.color || null, stroke: p.stroke || null,
-    size: p.size == null ? 100 : p.size, edit: p.edit || null,
+    size: p.size == null ? 100 : p.size, font_id: p.font ? p.font.id : null, edit: p.edit || null,
   };
 }
 

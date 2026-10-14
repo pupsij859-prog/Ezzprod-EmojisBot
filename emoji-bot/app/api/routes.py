@@ -1,6 +1,8 @@
 """HTTP API Mini App. Все ответы — JSON (кроме превью шаблонов)."""
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from typing import Any
 
@@ -14,6 +16,7 @@ from ..context import Context
 from ..ratelimit import limited
 
 router = APIRouter(prefix="/api")
+log = logging.getLogger("ezzprod")
 
 REF_PARAM = re.compile(r"^ref_([0-9a-f]{8})\Z")
 
@@ -61,6 +64,7 @@ def _me_payload(c: Context, row) -> dict[str, Any]:
             "sticker_pack_max": s.sticker_pack_max,
             "text_max": s.text_max,
             "logo_max_bytes": s.logo_max_bytes,
+            "font_max_bytes": s.font_max_bytes,
             "styles_max": s.styles_max,
         },
     }
@@ -114,6 +118,20 @@ async def template_file(template_id: str, request: Request):
 
 class GlyphsIn(BaseModel):
     text: str = Field(default="", max_length=64)
+    font_id: str | None = Field(default=None, max_length=32)
+
+
+async def own_font_path(c: Context, user_id: int, font_id: str | None):
+    """Путь к своему шрифту пользователя или None (стандартный). Чужой или неизвестный id — 404."""
+    from .. import user_fonts
+
+    font_id = services.clean_logo_id(font_id, "font")
+    if font_id is None:
+        return None
+    path = user_fonts.font_path(c.settings, font_id) if await user_fonts.owns(c.db, user_id, font_id) else None
+    if path is None:
+        raise HTTPException(404, {"code": "no_font"})
+    return path
 
 
 @router.post("/glyphs", dependencies=[Depends(limited("glyphs", 240, 60))])
@@ -122,16 +140,45 @@ async def glyphs(body: GlyphsIn, request: Request, row=Depends(user_row)):
     Тот же рисунок сборщик кладёт в настоящие TGS, поэтому превью совпадает с результатом."""
     from .. import fonts
 
-    text = services.clean_text(body.text, ctx_of(request).settings.text_max)
-    return {"text": text, "drawing": fonts.text_drawing(text) if text else None}
+    c = ctx_of(request)
+    text = services.clean_text(body.text, c.settings.text_max)
+    path = await own_font_path(c, row["id"], body.font_id)
+    drawing = await asyncio.to_thread(fonts.text_drawing, text, path) if text else None
+    return {"text": text, "drawing": drawing}
+
+
+# ───────────── свой шрифт ника ─────────────
+
+@router.post("/fonts", status_code=201, dependencies=[Depends(limited("fonts", 10, 60))])
+async def upload_font(request: Request, file: UploadFile = File(...), row=Depends(user_row)):
+    from ..user_fonts import save_font
+
+    c = ctx_of(request)
+    data = await file.read(c.settings.font_max_bytes + 1)  # не читаем больше лимита
+    return await save_font(c.db, c.settings, row["id"], file.filename or "font", data)
+
+
+@router.delete("/fonts/{font_id}")
+async def remove_font(font_id: str, request: Request, row=Depends(user_row)):
+    from ..user_fonts import delete_font
+
+    c = ctx_of(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", font_id) or not await delete_font(c.db, c.settings, row["id"], font_id):
+        raise HTTPException(404, {"code": "no_font"})
+    return {"ok": True}
+
+
+# Превью редактора считается в потоке. Пока пользователь двигает ползунок, клиент отменяет прошлые запросы, но поток
+# отменить нельзя: без очереди старые расчёты копятся и новое превью ждёт их все. Поэтому рендеры одного пользователя
+# идут по одному, а запрос, который клиент уже бросил или который обогнал более новый, не считается вовсе.
+_render_locks: dict[int, asyncio.Lock] = {}
+_render_latest: dict[int, int] = {}
 
 
 @router.post("/render", dependencies=[Depends(limited("render", 600, 60))])
 async def render_preview(request: Request, body: dict = Body(...), row=Depends(user_row)):
     """Продвинутый редактор (Pro): шаблон с ником, логотипом, цветами и правками → готовая анимация
     (тем же кодом, что собирает пак), список частей эмодзи, все цвета и проверка под требования Telegram."""
-    import asyncio
-
     from .. import editor, fonts, lottie
     from ..logos import load_vectors
 
@@ -145,6 +192,7 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
     color, stroke = services.clean_color(body.get("color")), services.clean_color(body.get("stroke"))
     size = services.clean_size(body.get("size"))
     edit = services.clean_edit(body.get("edit"))
+    font = await own_font_path(c, row["id"], body.get("font_id"))
     logo = None
     logo_id = services.clean_logo_id(body.get("logo_id"))
     if logo_id:
@@ -153,7 +201,7 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
         logo = variants[0] if variants else None
 
     def build() -> bytes:
-        drawing = fonts.text_drawing(text) if text else None
+        drawing = fonts.text_drawing(text, font) if text else None
         base = lottie.personalize(lottie.load(tpl.path), color=lottie.hex_to_rgb(color), stroke=lottie.hex_to_rgb(stroke),
                                   text=drawing, logo=logo, size=lottie.text_size(size))
         out, data = editor.render(base, edit, mark=True)
@@ -164,7 +212,17 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
             "checks": editor.check(out, data, base),
         })
 
-    payload = await asyncio.to_thread(build)
+    uid = row["id"]
+    mine = _render_latest[uid] = _render_latest.get(uid, 0) + 1
+    lock = _render_locks.setdefault(uid, asyncio.Lock())
+    async with lock:
+        if mine != _render_latest.get(uid) or await request.is_disconnected():
+            return Response(status_code=204)  # клиенту этот ответ уже не нужен
+        try:
+            payload = await asyncio.to_thread(build)
+        except Exception:
+            log.exception("render failed: %s %s", tpl.id, edit)
+            raise HTTPException(500, {"code": "render_failed"}) from None
     return Response(payload, media_type="application/json",
                     headers={"Content-Encoding": "gzip", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 

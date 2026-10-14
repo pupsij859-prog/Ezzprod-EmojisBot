@@ -15,7 +15,7 @@ edit = {
 часть вокруг её центра: собственная анимация слоя не трогается.
 
 В TGS нельзя эффекты, маски и выражения, поэтому эффекты собраны из того, что Telegram умеет:
-- пикселизация — контуры ступеньками по сетке, ступенчатое движение (кадров/с), меньше цветов, толще тонкие линии;
+- пикселизация — мозаика из квадратиков с зазорами: видимый цвет в центре каждой клетки на каждом кадре (app/pixel.py);
 - блеск металла и голограмма — градиентные заливки с анимированными точками градиента;
 - глитч — сдвиги всей картинки, цветные силуэты-копии, полосы и чёрточки в моменты сбоя;
 - эффект при показе (burst) — частицы вокруг эмодзи в начале каждого цикла. Эффект «по нажатию» в Telegram
@@ -52,13 +52,15 @@ BURSTS = ("none", "sparks", "hearts", "confetti", "stars", "flash")
 # значения по умолчанию и допустимые диапазоны настроек эффектов: (по умолчанию, мин, макс)
 FX = {
     "pixel": {"on": False, "grid": (32, 8, 64), "shape": "square", "fps": (15, 4, 30), "colors": (48, 2, 64),
-              "lines": (50, 0, 100)},
+              "lines": (80, 0, 100), "gap": (14, 0, 35)},
     "metal": {"on": False, "width": (100, 20, 300)},
     "glitch": {"on": False, "count": (6, 1, 16), "len": (100, 20, 300), "shift": (100, 0, 300),
                "stripes": (8, 0, 24), "dashes": (18, 0, 48), "ghost": True, "c1": "#ff1f4b", "c2": "#18e0ff",
                "seed": (1, 0, 99999)},
     "holo": {"on": False, "only": False, "parts": [], "palette": "red", "dir": "cw", "turns": (1, 1, 6),
-             "width": (100, 20, 300), "bright": (88, 0, 100), "gloss": True},
+             "width": (100, 20, 300), "bright": (88, 0, 100), "gloss": True,
+             "target": "contour", "dark": True, "tint": None,  # контур / заливки / всё, свой оттенок хрома
+             "edge": (10, 0, 32)},  # хромовая кромка по границе стикера, px холста (0 — без кромки)
     "burst": {"kind": "none", "count": (10, 4, 20), "color": None},
 }
 PART_RANGES = {"x": (-1024, 1024), "y": (-1024, 1024), "s": (0, 500), "r": (-720, 720), "o": (0, 100)}
@@ -82,8 +84,10 @@ def _num(value, lo: float, hi: float) -> float:
 
 def _clean_fx(name: str, raw) -> dict:
     spec = FX[name]
-    if not isinstance(raw, dict) or not set(raw) <= set(spec):
+    if not isinstance(raw, dict):
         raise ValueError(name)
+    # Незнакомые ключи пропускаем: Mini App и сервер обновляются не одновременно, а правки лежат у пользователя
+    # в localStorage — старый или новый ключ не должен ломать превью и сборку.
     out: dict = {}
     for key, default in spec.items():
         value = raw.get(key, default[0] if isinstance(default, tuple) else default)
@@ -93,14 +97,15 @@ def _clean_fx(name: str, raw) -> dict:
             if not isinstance(value, bool):
                 raise ValueError(key)
             out[key] = value
-        elif key in ("c1", "c2", "color"):
+        elif key in ("c1", "c2", "color", "tint"):
             out[key] = _hex(value)
         elif key == "parts":
             if not isinstance(value, list) or len(value) > 128 or not all(isinstance(p, str) and PID.match(p) for p in value):
                 raise ValueError(key)
             out[key] = list(dict.fromkeys(value))
         else:
-            allowed = {"shape": SHAPES, "palette": tuple(PALETTES), "dir": ("cw", "ccw"), "kind": BURSTS}[key]
+            allowed = {"shape": SHAPES, "palette": tuple(PALETTES), "dir": ("cw", "ccw"), "kind": BURSTS,
+                       "target": ("contour", "fill", "all")}[key]
             if value not in allowed:
                 raise ValueError(key)
             out[key] = value
@@ -729,16 +734,25 @@ def _group_items(o, found: list) -> list:
     return found
 
 
-def _gradient(fill: dict, stops: list[tuple[float, list[float]]], s, e, name: str) -> dict:
+def _gradient(paint: dict, stops: list[tuple[float, list[float]]], s, e, name: str) -> dict:
+    """Сплошная заливка (fl) → градиентная (gf), обводка (st) → градиентная обводка (gs) с той же толщиной."""
     flat: list[float] = []
     for pos, rgb in sorted(stops, key=lambda x: x[0]):
         flat += [round(max(0.0, min(1.0, pos)), 3), *[round(max(0.0, min(1.0, c)), 3) for c in rgb[:3]]]
-    return {"ty": "gf", "nm": name, "o": fill.get("o", {"a": 0, "k": 100}), "r": fill.get("r", 1), "bm": 0, "t": 1,
-            "s": s, "e": e, "g": {"p": len(stops), "k": {"a": 0, "k": flat}}}
+    out = {"ty": "gf", "nm": name, "o": paint.get("o", {"a": 0, "k": 100}), "bm": 0, "t": 1,
+           "s": s, "e": e, "g": {"p": len(stops), "k": {"a": 0, "k": flat}}}
+    if paint.get("ty") == "st":
+        out["ty"] = "gs"
+        out.update({k: paint[k] for k in ("w", "lc", "lj", "ml", "d") if k in paint})
+        out.setdefault("ml", 4)
+    else:
+        out["r"] = paint.get("r", 1)
+    return out
 
 
-def _gradient_fills(anim: dict, targets, make) -> None:
-    """Сплошные заливки → градиентные. targets(слой) решает, менять ли слой; make(заливка, габариты) → gf."""
+def _gradient_fills(anim: dict, targets, make, kinds: tuple[str, ...] = ("fl",)) -> None:
+    """Сплошные заливки (и/или обводки — kinds) → градиентные. targets(id части) решает, менять ли слой;
+    make(заливка или обводка, габариты) → gf/gs."""
     for scope, L, _lm, _pm in list(_walk_layers(anim)):
         if L.get("ty") != 4 or not targets(f"{scope}.{L.get('ind')}"):
             continue
@@ -749,16 +763,125 @@ def _gradient_fills(anim: dict, targets, make) -> None:
             if box is None:
                 continue
             for n, it in enumerate(items):
-                if isinstance(it, dict) and it.get("ty") == "fl" and it.get("nm") != SLOT and lottie._solid(it):
+                if (isinstance(it, dict) and (it.get("ty") in kinds or ("st" in kinds and it.get("nm") == "ezz pixel stroke"))
+                        and it.get("nm") != SLOT and lottie._solid(it)):
                     items[n] = make(it, box)
 
 
-def _holo(anim: dict, cfg: dict, per_turn: int = 16) -> None:
-    pal = [lottie.hex_to_rgb(c) for c in PALETTES[cfg["palette"]]]
+def _vivid_stops(pal: list, w: float, bright: float, gloss: bool) -> list[tuple[float, list[float]]]:
+    """Яркая голограмма для контура: тёмный — цвет — светлый — белый блик — светлый — цвет — тёмный, дважды
+    по длине градиента (на вращающемся контуре блики бегут с двух сторон)."""
+    stops: list[tuple[float, list[float]]] = []
+    for half in (0.0, 0.5):
+        if len(pal) > 1:  # радуга: оттенки подряд, блик посередине каждой половины
+            stops += [(half + 0.5 * n / len(pal), c) for n, c in enumerate(pal)]
+            if gloss:
+                stops += [(half + 0.25, _mix(_mix(pal[len(pal) // 2], WHITE, 0.5), WHITE, bright))]
+            continue
+        c = pal[0]
+        # Хром: полноценные чёрные и белые отражения с цветным акцентом, а не просто цветная заливка.
+        deep, light = [0.015, 0.015, 0.02], _mix(c, WHITE, 0.68)
+        stops += [(half, deep), (half + 0.07, _mix(c, deep, 0.45)), (half + 0.13, c),
+                  (half + 0.25 - w, light), (half + 0.25 + w, light), (half + 0.39, c), (half + 0.46, deep)]
+        stops.append((half + 0.25, _mix(light, WHITE, bright) if gloss else light))
+    stops.append((1.0, stops[0][1]))
+    return sorted(stops, key=lambda s: s[0])
+
+
+def _darken_base(anim: dict, targets, main_stroke=None) -> None:
+    """«Чёрная основа» под голограммой контура: заливки чернеют, кроме цвета контуров (белые буквы и кольца
+    остаются) и надписи. main_stroke — цвет контуров, если он уже не виден по анимации (после мозаики)."""
+    if main_stroke is None:
+        _main_fill, main_stroke = lottie.main_colors(anim)
+    black = [0.04, 0.04, 0.05]
+    for scope, L, _lm, _pm in list(_walk_layers(anim)):
+        if L.get("ty") != 4 or not targets(f"{scope}.{L.get('ind')}"):
+            continue
+        for item in _solid_paints(L, ("fl",)):
+            rgb = lottie._solid(item)
+            if main_stroke and lottie._near(rgb, main_stroke):
+                continue
+            k = item["c"]["k"]
+            item["c"] = {"a": 0, "k": [*black, k[3] if len(k) > 3 else 1]}
+
+
+def _paint_free(o) -> None:
+    """Убирает все заливки и обводки (контуры и трансформации остаются)."""
+    if isinstance(o, dict):
+        for v in o.values():
+            _paint_free(v)
+    elif isinstance(o, list):
+        o[:] = [v for v in o if not (isinstance(v, dict) and v.get("ty") in ("fl", "st", "gf", "gs"))]
+        for v in o:
+            _paint_free(v)
+
+
+def _holo_edge(anim: dict, cfg: dict, stops: list, angles: list) -> None:
+    """Хромовая кромка по границе стикера: под картинкой лежит её копия без заливок, обведённая толстой
+    переливающейся обводкой. Внутренняя половина обводки скрыта самой картинкой, снаружи остаётся ровная кромка
+    шириной cfg["edge"] — она повторяет силуэт эмодзи, какой бы формы он ни был. Градиент общий для всего
+    холста, поэтому блик бежит по кромке одним потоком, а не отдельно по каждой детали."""
+    W, H = float(anim.get("w") or 512), float(anim.get("h") or 512)
+    ip, op = anim.get("ip", 0), anim.get("op", 180)
+    t = rest_time(anim)
+    anim.setdefault("assets", [])
+    layers = _copy_comp(anim, anim["layers"], "_edge")
+    R = math.hypot(W, H) / 2
+    for _scope, L, lm, _pm in list(_walk_layers({"layers": layers, "assets": anim["assets"]}, t)):
+        if L.get("ty") != 4:
+            continue
+        shapes = L.get("shapes") or []
+        _paint_free(shapes)
+        if not _points(shapes, IDENT, [], t):
+            continue
+        inv = _inverse(lm)
+        if inv is None:  # деталь в этот момент скрыта масштабом 0 — кромка в её собственных координатах
+            box = _bbox(_points(shapes, IDENT, [], t)) or (0, 0, W, H)
+            cx, cy, r, k = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, max(1.0, math.hypot(box[2] - box[0], box[3] - box[1]) / 2), 1.0
+            to_local = lambda x, y: (x, y)  # noqa: E731
+        else:
+            cx, cy, r, k = W / 2, H / 2, R, _scale(lm)
+            to_local = lambda x, y, inv=inv: _apply(inv, x, y)  # noqa: E731
+        s = _keys([(tt, list(to_local(cx - r * math.cos(a), cy - r * math.sin(a)))) for tt, a in angles], LINEAR)
+        e = _keys([(tt, list(to_local(cx + r * math.cos(a), cy + r * math.sin(a)))) for tt, a in angles], LINEAR)
+        paint = {"ty": "st", "o": {"a": 0, "k": 100}, "w": {"a": 0, "k": round(2 * cfg["edge"] / k, 2)}, "lc": 2, "lj": 2}
+        gs = _gradient(paint, stops, s, e, "ezz holo edge")
+        shapes.append(gs)
+    anim["assets"].append({"id": "ezz_holo_edge", "layers": layers})
+    ind = max((l.get("ind", 0) for l in anim["layers"] if isinstance(l.get("ind"), int)), default=0) + 1
+    anim["layers"].append({"ddd": 0, "ind": ind, "ty": 0, "nm": "ezz holo edge", "refId": "ezz_holo_edge", "sr": 1, "ao": 0,
+                           "w": W, "h": H, "ip": ip, "op": op, "st": 0, "bm": 0,
+                           "ks": {"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0}, "p": {"a": 0, "k": [0, 0, 0]},
+                                  "a": {"a": 0, "k": [0, 0, 0]}, "s": {"a": 0, "k": [100, 100, 100]}}})
+
+
+def _holo(anim: dict, cfg: dict, per_turn: int = 16, edge: bool = True, main_stroke=None) -> None:
+    pal = [lottie.hex_to_rgb(cfg["tint"])] if cfg.get("tint") else [lottie.hex_to_rgb(c) for c in PALETTES[cfg["palette"]]]
     ip, op = anim.get("ip", 0), anim.get("op", 180)
     turns, sign = cfg["turns"], (1 if cfg["dir"] == "cw" else -1)
     w = max(0.01, min(0.3, 0.06 * cfg["width"] / 100))
     only = set(cfg["parts"]) if cfg["only"] else None
+    targets = (lambda pid: pid in only) if only is not None else (lambda pid: True)
+    vivid = _vivid_stops(pal, max(0.01, min(0.1, 0.04 * cfg["width"] / 100)), cfg["bright"] / 100, cfg["gloss"])
+
+    n = per_turn * turns
+    ang = [(ip + (op - ip) * j / n, sign * 2 * math.pi * turns * j / n - math.pi / 4) for j in range(n + 1)]
+
+    def rotating(paint, box, stops):
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        R = max(1.0, math.hypot(box[2] - box[0], box[3] - box[1]) / 2)
+        s = _keys([(t, [cx - R * math.cos(a), cy - R * math.sin(a)]) for t, a in ang], LINEAR)
+        e = _keys([(t, [cx + R * math.cos(a), cy + R * math.sin(a)]) for t, a in ang], LINEAR)
+        return _gradient(paint, stops, s, e, "ezz holo")
+
+    if cfg["target"] in ("contour", "all"):
+        if cfg["dark"]:
+            _darken_base(anim, targets, main_stroke)
+        _gradient_fills(anim, targets, lambda st, box: rotating(st, box, vivid), ("st",))
+        if edge and cfg["edge"] and only is None:
+            _holo_edge(anim, cfg, vivid, ang)
+    if cfg["target"] == "contour":
+        return
 
     def make(fill, box):
         base = lottie._solid(fill)
@@ -776,15 +899,9 @@ def _holo(anim: dict, cfg: dict, per_turn: int = 16) -> None:
                 return stops[-1][1]
             hl = _mix(at(0.5), WHITE, cfg["bright"] / 100)
             stops = [s for s in stops if not 0.5 - w < s[0] < 0.5 + w] + [(0.5 - w, at(0.5 - w)), (0.5, hl), (0.5 + w, at(0.5 + w))]
-        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        R = max(1.0, math.hypot(box[2] - box[0], box[3] - box[1]) / 2)
-        n = per_turn * turns
-        ang = [(ip + (op - ip) * j / n, sign * 2 * math.pi * turns * j / n - math.pi / 4) for j in range(n + 1)]
-        s = _keys([(t, [cx - R * math.cos(a), cy - R * math.sin(a)]) for t, a in ang], LINEAR)
-        e = _keys([(t, [cx + R * math.cos(a), cy + R * math.sin(a)]) for t, a in ang], LINEAR)
-        return _gradient(fill, stops, s, e, "ezz holo")
+        return rotating(fill, box, stops)
 
-    _gradient_fills(anim, (lambda pid: pid in only) if only is not None else (lambda pid: True), make)
+    _gradient_fills(anim, targets, make)
 
 
 def _metal(anim: dict, cfg: dict) -> None:
@@ -821,73 +938,6 @@ def _bez(p0, p1, p2, p3, t):
             mt ** 3 * p0[1] + 3 * mt * mt * t * p1[1] + 3 * mt * t * t * p2[1] + t ** 3 * p3[1])
 
 
-def _stairs(shape: dict, cell: float, mode: str, m=IDENT) -> dict:
-    """Контур → «пиксельный» контур по сетке cell: ступеньки, углы скруглены для мягкой/круглой формы.
-    m — переход из координат фигуры на холст: сетка общая для всех деталей, поэтому ступеньки соседних
-    деталей совпадают. Результат возвращается в координаты фигуры."""
-    v = shape.get("v") or []
-    n = len(v)
-    inv = _inverse(m)
-    if n < 2 or cell <= 0 or inv is None:
-        return shape
-    ins, outs = shape.get("i") or [[0, 0]] * n, shape.get("o") or [[0, 0]] * n
-    closed = shape.get("c", True)
-    pts = []
-    for j in range(n if closed else n - 1):
-        p0, p3 = _apply(m, *v[j][:2]), _apply(m, *v[(j + 1) % n][:2])
-        p1 = _apply(m, v[j][0] + outs[j][0], v[j][1] + outs[j][1])
-        q = v[(j + 1) % n]
-        p2 = _apply(m, q[0] + ins[(j + 1) % n][0], q[1] + ins[(j + 1) % n][1])
-        length = math.dist(p0, p1) + math.dist(p1, p2) + math.dist(p2, p3)
-        steps = max(1, min(96, math.ceil(length / (cell * 0.34))))
-        pts += [_bez(p0, p1, p2, p3, s / steps) for s in range(steps)]
-    if not closed:
-        pts.append(_apply(m, *v[-1][:2]))
-    snap = lambda q: (round(q[0] / cell) * cell, round(q[1] / cell) * cell)  # noqa: E731
-    grid: list[tuple[float, float]] = []
-    for q in map(snap, pts):
-        if grid and grid[-1] == q:
-            continue
-        if grid and grid[-1][0] != q[0] and grid[-1][1] != q[1]:
-            grid.append((q[0], grid[-1][1]))  # ступенька вместо диагонали
-        grid.append(q)
-    if closed and len(grid) > 1:
-        if grid[0] == grid[-1]:
-            grid.pop()
-        if grid and grid[-1][0] != grid[0][0] and grid[-1][1] != grid[0][1]:
-            grid.append((grid[0][0], grid[-1][1]))
-    out: list[tuple[float, float]] = []  # без лишних точек на прямых
-    for j, q in enumerate(grid):
-        a, b = grid[j - 1], grid[(j + 1) % len(grid)]
-        if closed and ((a[0] == q[0] == b[0]) or (a[1] == q[1] == b[1])):
-            continue
-        out.append(q)
-    if closed and len(out) < 3:  # деталь меньше клетки — одна клетка в её центре
-        cx = sum(p[0] for p in pts) / len(pts)
-        cy = sum(p[1] for p in pts) / len(pts)
-        x0, y0 = snap((cx - cell / 2, cy - cell / 2))
-        out = [(x0, y0), (x0 + cell, y0), (x0 + cell, y0 + cell), (x0, y0 + cell)]
-    back = lambda q: [round(c, 2) for c in _apply(inv, q[0], q[1])]  # noqa: E731
-    vec = lambda q: [round(inv[0] * q[0] + inv[2] * q[1], 2), round(inv[1] * q[0] + inv[3] * q[1], 2)]  # noqa: E731
-    if mode == "square" or not closed:
-        z = [[0, 0] for _ in out]
-        return {"c": closed, "v": [back(q) for q in out], "i": z, "o": [p[:] for p in z]}
-    rad = cell * (0.28 if mode == "soft" else 0.5)
-    vv, ii, oo = [], [], []
-    for j, p in enumerate(out):
-        a, b = out[j - 1], out[(j + 1) % len(out)]
-        la, lb = math.dist(p, a), math.dist(p, b)
-        if la < 1e-9 or lb < 1e-9:
-            continue
-        r = min(rad, la / 2, lb / 2)
-        pa = (p[0] + (a[0] - p[0]) / la * r, p[1] + (a[1] - p[1]) / la * r)
-        pb = (p[0] + (b[0] - p[0]) / lb * r, p[1] + (b[1] - p[1]) / lb * r)
-        vv += [pa, pb]
-        ii += [(0, 0), ((p[0] - pb[0]) * 0.55, (p[1] - pb[1]) * 0.55)]
-        oo += [((p[0] - pa[0]) * 0.55, (p[1] - pa[1]) * 0.55), (0, 0)]
-    return {"c": True, "v": [back(q) for q in vv], "i": [vec(q) for q in ii], "o": [vec(q) for q in oo]}
-
-
 def _primitive_path(it: dict) -> dict | None:
     """Эллипс или прямоугольник без анимации → обычный контур (чтобы его можно было пикселизовать)."""
     if any(_is_anim(it.get(k)) for k in ("p", "s", "r")):
@@ -903,106 +953,11 @@ def _primitive_path(it: dict) -> dict | None:
             "i": z, "o": z}
 
 
-def _pixel_items(items: list, cell: float, m, t: float, cfg: dict) -> None:
-    """m — переход из координат этих элементов на холст (в кадре t)."""
-    if any(isinstance(i, dict) and i.get("nm") == SLOT for i in items):
-        return  # ник оставляем гладким, чтобы читался
-    local = cell / _scale(m)
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        ty = it.get("ty")
-        if ty == "gr":
-            sub = it.get("it") or []
-            tr = next((i for i in sub if isinstance(i, dict) and i.get("ty") == "tr"), None)
-            _pixel_items(sub, cell, _mul(m, _tr_matrix(tr, t)), t, cfg)
-            continue
-        if ty in ("el", "rc"):
-            shape = _primitive_path(it)
-            if shape is None:
-                continue
-            nm = it.get("nm")
-            it.clear()
-            it.update({"ty": "sh", "nm": nm, "ks": {"a": 0, "k": shape}})
-            ty = "sh"
-        if ty == "sh":
-            ks = it.get("ks") or {}
-            if _is_anim(ks):
-                for kf in ks["k"]:
-                    s = kf.get("s")
-                    if isinstance(s, list) and s and isinstance(s[0], dict):
-                        kf["s"] = [_stairs(s[0], cell, cfg["shape"], m)]
-                    kf.pop("e", None)
-                    kf.pop("i", None)
-                    kf.pop("o", None)
-                    kf["h"] = 1
-                ks["k"][-1].pop("h", None)
-            else:
-                shape = ks.get("k")
-                if isinstance(shape, list):
-                    shape = shape[0] if shape else None
-                if isinstance(shape, dict) and shape.get("v"):
-                    ks["k"] = _stairs(shape, cell, cfg["shape"], m)
-        elif ty == "st" and cfg["lines"]:
-            w = it.get("w")
-            if not _is_anim(w):
-                it["w"] = {"a": 0, "k": round(max(_vec(w, [1])[0], local * cfg["lines"] / 100), 2)}
-            it["lj"], it["lc"] = 1, 1
-
-
-def _reduce_palette(anim: dict, n: int) -> None:
-    """Не больше n цветов: ближайшие цвета сливаются (среднее по числу мест), пока их не станет n.
-    Если в шаблоне цветов и так не больше n — ничего не меняется, оттенки не плывут."""
-    items = list(_solid_paints(anim))
-    found: dict[str, list] = {}
-    for it in items:
-        rgb = lottie._solid(it)
-        found.setdefault(to_hex(rgb), [rgb, 0])[1] += 1
-    clusters = [[rgb, w, {key}] for key, (rgb, w) in found.items()]
-    while len(clusters) > n:
-        best = None
-        for i in range(len(clusters)):
-            for j in range(i + 1, len(clusters)):
-                d = math.dist(clusters[i][0], clusters[j][0])
-                if best is None or d < best[0]:
-                    best = (d, i, j)
-        _, i, j = best
-        a, b = clusters[i], clusters[j]
-        w = a[1] + b[1]
-        merged = [[(x * a[1] + y * b[1]) / w for x, y in zip(a[0], b[0])], w, a[2] | b[2]]
-        clusters = [c for k, c in enumerate(clusters) if k not in (i, j)] + [merged]
-    target = {key: c[0] for c in clusters for key in c[2]}
-    for it in items:
-        k = it["c"]["k"]
-        it["c"] = {"a": 0, "k": [*[round(x, 4) for x in target[to_hex(lottie._solid(it))]], k[3] if len(k) > 3 else 1]}
-
-
 def _pixel(anim: dict, cfg: dict) -> None:
-    fr = float(anim.get("fr") or 60)
-    step = max(1.0, fr / cfg["fps"])
-    if step > 1:  # ступенчатое движение: каждое анимированное свойство — удерживаемые кадры с шагом step
-        for node in list(_anim_props(anim)):
-            kfs = node["k"]
-            t0, t1 = kfs[0]["t"], kfs[-1]["t"]
-            if t1 <= t0:
-                continue
-            times = sorted({t0, t1, *(m * step for m in range(math.ceil(t0 / step), math.floor(t1 / step) + 1))})
-            new = []
-            for t in times:
-                v = value_at(kfs, t)
-                if v is None:
-                    break
-                new.append({"t": round(t, 3), "s": _r(_as_list(v), 3), "h": 1})
-            else:
-                new[-1].pop("h", None)
-                node["k"] = new
-    cell = float(anim.get("w") or 512) / cfg["grid"]
-    t = rest_time(anim)
-    for _scope, L, lm, _pm in list(_walk_layers(anim, t)):
-        if L.get("ty") == 4:
-            _pixel_items(L.get("shapes") or [], cell, lm, t, cfg)
-    if cfg["colors"] < 64:
-        _reduce_palette(anim, cfg["colors"])
+    """Пиксельная мозаика — см. app/pixel.py."""
+    from .pixel import mosaic
+
+    mosaic(anim, cfg)
 
 
 # ── слои-помощники
@@ -1142,6 +1097,16 @@ def _recolor_all(o, rgb) -> None:
 
 def _silhouette(anim: dict, layers: list, suffix: str, rgb) -> list:
     """Копия картинки одним цветом (вложенные прекомпозиции копируются под новыми id)."""
+    out = _copy_comp(anim, layers, suffix)
+    _recolor_all(out, rgb)
+    for a in anim["assets"]:
+        if str(a.get("id", "")).endswith(suffix):
+            _recolor_all(a["layers"], rgb)
+    return out
+
+
+def _copy_comp(anim: dict, layers: list, suffix: str) -> list:
+    """Копия слоёв; вложенные прекомпозиции копируются в анимацию под id с суффиксом."""
     ids = {a["id"]: a for a in anim.get("assets") or [] if isinstance(a, dict) and "layers" in a}
     made: dict[str, str] = {}
 
@@ -1150,7 +1115,6 @@ def _silhouette(anim: dict, layers: list, suffix: str, rgb) -> list:
         for L in out:
             if L.get("ty") == 0 and L.get("refId") in ids:
                 L["refId"] = copy_asset(L["refId"])
-        _recolor_all(out, rgb)
         return out
 
     def copy_asset(aid: str) -> str:
@@ -1230,7 +1194,7 @@ def _glitch(anim: dict, cfg: dict, ghosts: bool = True) -> None:
 
 # ───────────────────────── применение ─────────────────────────
 
-def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = True, lite: bool = False) -> dict:
+def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = True, lite: int = 0) -> dict:
     """Применяет edit к анимации (на месте) и возвращает её. mark — подписать слои частей (id в SVG превью)."""
     edit = edit or {}
     index = _layer_index(anim)
@@ -1250,14 +1214,18 @@ def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = T
             layers, L = index[pid]
             _edit_part(anim, layers, L, p, 1 / _scale(world.get(pid, IDENT)))
     fx = edit.get("fx") or {}
+    if "burst" in fx:  # до мозаики: частицы тоже становятся клетками
+        _burst(anim, fx["burst"])
+    main_stroke = lottie.main_colors(anim)[1] if "pixel" in fx and "holo" in fx else None
     if "pixel" in fx:
-        _pixel(anim, {**fx["pixel"], "fps": min(fx["pixel"]["fps"], 8)} if lite else fx["pixel"])
+        cfg = fx["pixel"]
+        if lite:  # реже кадры и меньше цветов — меньше переключений клеток
+            cfg = {**cfg, "fps": min(cfg["fps"], 8 if lite == 1 else 5), "colors": min(cfg["colors"], 24 if lite == 1 else 12)}
+        _pixel(anim, cfg)
     if "holo" in fx:
-        _holo(anim, fx["holo"], 6 if lite else 16)
+        _holo(anim, fx["holo"], 6 if lite else 16, edge="pixel" not in fx and lite < 2, main_stroke=main_stroke)
     if "metal" in fx:
         _metal(anim, fx["metal"])
-    if "burst" in fx:
-        _burst(anim, fx["burst"])
     if "glitch" in fx:
         _glitch(anim, fx["glitch"], ghosts)
     return anim
@@ -1271,7 +1239,8 @@ def variants(edit: dict | None):
     if "glitch" in fx and fx["glitch"]["ghost"]:
         yield {"ghosts": False}
     if "pixel" in fx or "holo" in fx:
-        yield {"ghosts": False, "lite": True}
+        yield {"ghosts": False, "lite": 1}
+        yield {"ghosts": False, "lite": 2}  # голограмма без кромки, мозаика ещё реже и беднее цветом
 
 
 # ───────────────────────── проверка под Telegram ─────────────────────────
@@ -1346,9 +1315,9 @@ def _keys_state(anim: dict) -> tuple[bool, int]:
     """(ключевые кадры в порядке, сколько свойств в конце цикла не возвращаются к началу)."""
     ip, op = anim.get("ip", 0), anim.get("op", 0)
     ok, jerks = True, 0
-    # цветные силуэты глитча — копии картинки: их свойства не считаем второй раз
-    ghosts = [a for a in anim.get("assets") or [] if isinstance(a, dict) and str(a.get("id", "")).startswith("ezz_ghost")
-              or str(a.get("id", "")).endswith(("_g1", "_g2"))]
+    # цветные силуэты глитча и кромка голограммы — копии картинки: их свойства не считаем второй раз
+    ghosts = [a for a in anim.get("assets") or [] if isinstance(a, dict) and str(a.get("id", "")).startswith(("ezz_ghost", "ezz_holo_edge"))
+              or str(a.get("id", "")).endswith(("_g1", "_g2", "_edge"))]
     scope = [anim.get("layers") or [], *[a for a in anim.get("assets") or [] if a not in ghosts]]
     for node in _anim_props(scope):
         kfs = node["k"]
