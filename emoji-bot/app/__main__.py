@@ -53,6 +53,11 @@ def main() -> None:
     print(f"  данные:    {settings.data_dir}")
     if not settings.bot_token:
         print("  ! BOT_TOKEN не задан: бот и оплата Stars выключены")
+    if settings.demo_mode:
+        # имитация «собирает» пак за пару секунд и ничего не создаёт в Telegram — это легко принять за поломку
+        print("  ! сборка:  ИМИТАЦИЯ (DEMO_MODE=1) — наборы в Telegram НЕ создаются. Для настоящих паков: DEMO_MODE=0")
+    else:
+        print("  сборка:    настоящие наборы Telegram")
     if settings.webapp_url:
         print(f"  Mini App:  {settings.webapp_url}")
     else:
