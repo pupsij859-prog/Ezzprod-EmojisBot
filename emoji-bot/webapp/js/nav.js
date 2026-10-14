@@ -50,8 +50,12 @@ export const depth = () => stack.length;
  * render({close}) → Node | Node[]
  */
 export function openOverlay({ kind = 'screen', className = '', render, onClose, dismissible = true, label = '' }) {
+  // двойной тап не должен открывать тот же экран второй раз поверх себя
+  const key = `${kind}|${className}|${label}`;
+  const open = stack.find((e) => e.key === key);
+  if (open) return open.handle;
   const returnFocus = document.activeElement;
-  const entry = { kind, dismissible, onClose, returnFocus, el: null };
+  const entry = { kind, dismissible, onClose, returnFocus, el: null, key, handle: null };
   const close = () => removeEntry(entry);
   const content = render({ close });
   const nodes = Array.isArray(content) ? content : [content];
@@ -87,7 +91,8 @@ export function openOverlay({ kind = 'screen', className = '', render, onClose, 
     entry.el.classList.add('is-open');
     try { surface.focus({ preventScroll: true }); } catch {}
   });
-  return { close, el: entry.el, surface };
+  entry.handle = { close, el: entry.el, surface };
+  return entry.handle;
 }
 
 function enableSheetDrag(entry, surface, close) {

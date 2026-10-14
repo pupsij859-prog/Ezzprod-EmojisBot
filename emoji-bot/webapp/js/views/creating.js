@@ -7,11 +7,12 @@ import { goTab } from '../router.js';
 import { haptic, openLink } from '../tg.js';
 import { emojiWord, h, prefersReducedMotion, sleep, toast } from '../ui.js';
 
+const SLOW_AFTER_MS = 90_000; // дольше этого — «сборка затянулась» вместо вечного прогресса
+
 const STAGES = [
-  [0, 'Подбираем шаблоны…'],
-  [0.3, 'Красим в твои цвета…'],
-  [0.6, 'Добавляем текст и логотип…'],
-  [0.85, 'Собираем пак…'],
+  [0, 'Готовим файлы…'],
+  [0.3, 'Загружаем в Telegram…'],
+  [0.85, 'Почти готово…'],
 ];
 
 const stageFor = (p) => STAGES.reduce((acc, [from, label]) => (p >= from ? label : acc), STAGES[0][1]);
@@ -54,6 +55,7 @@ export function openCreating(initial) {
         let progress = initial.progress || 0;
         const started = Date.now();
         while (alive) {
+          if (Date.now() - started > SLOW_AFTER_MS) return slow();
           try {
             const pack = await api.pack(initial.id);
             if (!alive) return;
@@ -88,6 +90,18 @@ export function openCreating(initial) {
                 goTab('packs');
                 document.getElementById('my-packs')?.scrollIntoView();
               } }))));
+      }
+
+      // сборка затянулась: не крутим проценты бесконечно, а честно говорим, что пришлём сообщение
+      function slow() {
+        finished = true; // при закрытии не дублируем тост «соберём в фоне»
+        root.replaceChildren(
+          CloseButton(close),
+          h('div', { class: 'creating__box' },
+            BigEmoji('clock'),
+            h('h2', { class: 'creating__title' }, 'Сборка затянулась'),
+            h('p', { class: 'creating__sub' }, 'Пак всё ещё собирается. Пришлём сообщение в чат, когда он будет готов, а статус видно во вкладке «Паки»'),
+            Button({ label: 'Понятно', onClick: close })));
       }
 
       function failed() {

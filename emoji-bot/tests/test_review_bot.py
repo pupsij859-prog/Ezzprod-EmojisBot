@@ -135,34 +135,65 @@ async def test_refund_command_is_silent_for_non_admins(db, tmp_path):
     assert session.calls == []  # обычному пользователю бот не отвечает вообще
 
 
-async def test_refund_command_failed_telegram_call_reverts(db, tmp_path):
-    from aiogram.methods import RefundStarPayment
+async def _refund_with(db, tmp_path, make_failure, transactions=None):
+    from types import SimpleNamespace as NS
+
+    from aiogram.methods import GetStarTransactions, RefundStarPayment
 
     s = make_settings(tmp_path, signup_gens=0, admin_ids=(777,))
     await make_user(db, s, 1)
     pid = await services.create_payment(db, 1, 10, 60)
     await services.settle_payment(db, s, pid, "chR", 60, 1)
     ctx, bot, session = await make_ctx(db, s)
-
     original = session.make_request
 
-    async def fail_refund(bot_, method, timeout=None):
+    async def fake(bot_, method, timeout=None):
         if isinstance(method, RefundStarPayment):
             session.calls.append(method)
-            raise RuntimeError("network down")
+            raise make_failure(method)
+        if isinstance(method, GetStarTransactions):
+            session.calls.append(method)
+            if transactions is None:
+                raise RuntimeError("журнал Stars тоже недоступен")
+            return NS(transactions=transactions)
         return await original(bot_, method, timeout)
 
-    session.make_request = fail_refund
+    session.make_request = fake
     dp = create_dispatcher(ctx)
     await dp.feed_update(bot, text_update(777, "/refund chR"))
-    assert (await services.get_user(db, 1))["balance"] == 10  # генерации вернулись
-    assert any(isinstance(c, RefundStarPayment) for c in session.calls)
+    status = (await db.fetchone("SELECT status FROM payment_events WHERE charge_id='chR'"))["status"]
+    return (await services.get_user(db, 1))["balance"], status, session
+
+
+async def test_refund_explicitly_refused_by_telegram_reverts(db, tmp_path):
+    from aiogram.exceptions import TelegramBadRequest
+
+    balance, status, _ = await _refund_with(db, tmp_path, lambda m: TelegramBadRequest(method=m, message="CHARGE_ALREADY_REFUNDED"))
+    assert (balance, status) == (10, "credited")  # отказ Telegram: генерации вернулись
+
+
+async def test_refund_unknown_outcome_is_not_reverted_blindly(db, tmp_path):
+    """Сеть упала: Telegram мог вернуть Stars. Не возвращаем генерации вслепую, оставляем «refunding» для ручной проверки."""
+    balance, status, _ = await _refund_with(db, tmp_path, lambda m: RuntimeError("network down"))
+    assert (balance, status) == (0, "refunding")
+
+
+async def test_refund_outcome_resolved_from_star_journal(db, tmp_path):
+    """Сеть упала, но в журнале Stars есть возврат с тем же id — значит, деньги вернулись."""
+    from types import SimpleNamespace as NS
+
+    refund_tx = NS(id="chR", amount=60, source=None, receiver=NS(type="user"))
+    balance, status, _ = await _refund_with(db, tmp_path, lambda m: RuntimeError("timeout"), [refund_tx])
+    assert (balance, status) == (0, "refunded")
+
+
+async def test_refund_reverted_when_star_journal_has_no_refund(db, tmp_path):
+    balance, status, _ = await _refund_with(db, tmp_path, lambda m: RuntimeError("timeout"), [])
+    assert (balance, status) == (10, "credited")  # возврата в журнале нет — откатываем
 
 
 # ───────────────────────── логи и токен ─────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="P1: RedactTokens чистит только msg/args; токен в тексте traceback (exc_info) "
-                                       "проходит в лог как есть")
 def test_token_is_redacted_in_tracebacks():
     import io
 

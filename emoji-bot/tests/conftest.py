@@ -30,7 +30,7 @@ def sign_init_data(user: dict, bot_token: str = BOT_TOKEN, auth_date: int | None
 
 
 def make_settings(tmp_path: Path, **over) -> Settings:
-    base = dict(bot_token=BOT_TOKEN, data_dir=tmp_path, dev_mode=True,
+    base = dict(bot_token=BOT_TOKEN, bot_username="ezz_test_bot", data_dir=tmp_path, dev_mode=True,
                 demo_build_min_s=0.05, demo_build_max_s=0.1, brand_name="EzzProd")
     base.update(over)
     return Settings(**base)

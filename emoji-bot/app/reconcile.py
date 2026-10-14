@@ -40,7 +40,8 @@ def payment_from_transaction(tx) -> StarPayment | None:
     return StarPayment(charge_id=str(tx.id), payload=str(payload), user_id=int(user.id), amount=int(amount))
 
 
-async def reconcile_stars(ctx: Context, max_pages: int = 10) -> int:
+async def reconcile_stars(ctx: Context, max_pages: int = 200) -> int:
+    # 200 страниц × 100 = 20 000 транзакций: с запасом на долгий простой (порядок выдачи у Telegram не гарантирован)
     """Возвращает число доначисленных платежей."""
     bot = ctx.bot
     if bot is None:
@@ -63,6 +64,8 @@ async def reconcile_stars(ctx: Context, max_pages: int = 10) -> int:
                 credited += 1
                 log.warning("доначислен пропущенный платёж %s: user=%s qty=%s", payment.charge_id, payment.user_id, result.qty)
                 await _safe(ctx.notifier.payment_ok, result.user_id, result.qty, result.balance)
+                if result.reward_user_id:
+                    await _safe(ctx.notifier.referral_reward, result.reward_user_id, result.reward_amount)
             else:
                 log.error("платёж %s требует ручного разбора: user=%s amount=%s", payment.charge_id, payment.user_id, payment.amount)
                 await _safe(

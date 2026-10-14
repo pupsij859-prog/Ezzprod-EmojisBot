@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 
 INIT_DATA_MAX_AGE = 24 * 60 * 60  # initData старше суток не принимаем (рекомендация Telegram)
 CLOCK_SKEW = 5 * 60               # допуск на расхождение часов
-START_PARAM = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+START_PARAM = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
 
 _FORWARD_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded", "cf-connecting-ip")
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}

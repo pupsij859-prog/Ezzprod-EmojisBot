@@ -13,13 +13,11 @@ from . import catalog
 from .config import Settings
 from .db import Database, Tx
 
-HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-IDEM_KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}\Z")
+IDEM_KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
 # управляющие, bidi и «невидимые» символы, а также запрещённые в XML 1.0 (U+FFFE, U+FFFF)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f​-‏‪-‮⁠﻿￾￿]")
 
-DEFAULT_FILL = "#131822"
-DEFAULT_STROKE = "#a8c7ef"
 
 
 class ServiceError(Exception):
@@ -152,21 +150,96 @@ def validate_pack_request(settings: Settings, body: dict) -> dict:
         raise ValidationFailed("too_many")
     if not catalog.exists_all(ids):
         raise ValidationFailed("unknown_template")
-    fill = body.get("fill") or DEFAULT_FILL
-    stroke = body.get("stroke") or DEFAULT_STROKE
-    if not (isinstance(fill, str) and HEX_COLOR.match(fill) and isinstance(stroke, str) and HEX_COLOR.match(stroke)):
-        raise ValidationFailed("color")
-    logo_id = body.get("logo_id")
-    if logo_id is not None and not (isinstance(logo_id, str) and re.fullmatch(r"[0-9a-f]{32}", logo_id)):
-        raise ValidationFailed("logo")
+    color = clean_color(body.get("color"))
+    stroke = clean_color(body.get("stroke"))
+    logo_id = clean_logo_id(body.get("logo_id"))
     return {
         "type": kind,
         "template_ids": ids,
         "text": clean_text(body.get("text"), settings.text_max),
         "logo_id": logo_id,
-        "fill": fill.lower(),
-        "stroke": stroke.lower(),
+        "color": color,
+        "stroke": stroke,
+        "size": clean_size(body.get("size")),
+        "overrides": clean_overrides(settings, body.get("overrides"), ids),
     }
+
+
+ITEM_KEYS = ("text", "logo_id", "color", "stroke", "size", "edit")
+PACK_KEYS = ("text", "logo_id", "color", "stroke", "size")
+
+
+def clean_size(value) -> int:
+    """«Размер надписи», % (100 — автоподбор по длине ника)."""
+    if value in (None, ""):
+        return 100
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationFailed("size")
+    return int(max(40, min(160, round(value))))
+
+
+def clean_edit(value) -> dict | None:
+    """Правки продвинутого редактора (Pro) — см. app/editor.py."""
+    from . import editor
+
+    try:
+        return editor.clean_edit(value)
+    except ValueError as exc:
+        raise ValidationFailed("edit") from exc
+
+
+def has_edits(req: dict) -> bool:
+    return any(o.get("edit") for o in (req.get("overrides") or {}).values())
+
+
+def clean_logo_id(value) -> str | None:
+    if value in (None, ""):
+        return None
+    if not (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)):
+        raise ValidationFailed("logo")
+    return value
+
+
+def clean_overrides(settings: Settings, raw, ids: list[str]) -> dict[str, dict]:
+    """Свои настройки отдельных элементов: {template_id: {text?, logo_id?, color?, stroke?, size?, edit?}}.
+    Есть ключ — значение заменяет общее (в том числе пустое: «без ника», «родной цвет», «без логотипа»).
+    edit — правки продвинутого редактора, только у отдельных элементов (их части у каждого шаблона свои)."""
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or len(raw) > len(ids):
+        raise ValidationFailed("overrides")
+    out: dict[str, dict] = {}
+    for template_id, item in raw.items():
+        if template_id not in ids or not isinstance(item, dict) or not set(item) <= set(ITEM_KEYS):
+            raise ValidationFailed("overrides")
+        clean: dict = {}
+        if "text" in item:
+            if item["text"] is not None and not isinstance(item["text"], str):
+                raise ValidationFailed("overrides")
+            clean["text"] = clean_text(item["text"], settings.text_max)
+        if "logo_id" in item:
+            clean["logo_id"] = clean_logo_id(item["logo_id"])
+        for key in ("color", "stroke"):
+            if key in item:
+                clean[key] = clean_color(item[key])
+        if "size" in item:
+            clean["size"] = clean_size(item["size"])
+        if "edit" in item:
+            edit = clean_edit(item["edit"])
+            if edit:
+                clean["edit"] = edit
+        if clean:
+            out[template_id] = clean
+    return out
+
+
+def clean_color(value) -> str | None:
+    """Цвет надписи: '#rrggbb' или None (пусто) — родной цвет каждого шаблона."""
+    if value in (None, ""):
+        return None
+    if not (isinstance(value, str) and HEX_COLOR.match(value)):
+        raise ValidationFailed("color")
+    return value.lower()
 
 
 async def create_pack(
@@ -184,13 +257,17 @@ async def create_pack(
             existing = await t.fetchone("SELECT * FROM packs WHERE user_id=? AND idem_key=?", (user_id, idem_key))
             if existing is not None:
                 return pack_view(existing), False
-        if req["logo_id"]:
-            logo = await t.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (req["logo_id"], user_id))
+        overrides = req.get("overrides") or {}
+        logo_ids = {req["logo_id"], *(o.get("logo_id") for o in overrides.values())} - {None}
+        for logo_id in logo_ids:  # логотип — только свой
+            logo = await t.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (logo_id, user_id))
             if logo is None:
                 raise ValidationFailed("logo")
-        user = await t.fetchone("SELECT balance FROM users WHERE id=?", (user_id,))
+        user = await t.fetchone("SELECT balance, plan FROM users WHERE id=?", (user_id,))
         if user is None:
             raise ValidationFailed("user")
+        if has_edits(req) and user["plan"] != "pro":  # продвинутые настройки — только в Pro
+            raise ProRequired()
         if user["balance"] < cost:
             raise InsufficientBalance(need=cost - user["balance"])
         suffix = "эмодзи" if req["type"] == "emoji" else "стикеры"
@@ -201,11 +278,15 @@ async def create_pack(
             (
                 user_id, req["type"], title, "processing", cost,
                 json.dumps(req["template_ids"]),
-                json.dumps({k: req[k] for k in ("text", "logo_id", "fill", "stroke")}),
+                json.dumps({k: req[k] for k in PACK_KEYS if k in req}),
                 idem_key, duration_s, now(),
             ),
         )
         pack_id = cur.lastrowid
+        for idx, template_id in enumerate(req["template_ids"]):
+            own = overrides.get(template_id)
+            await t.execute("INSERT INTO pack_items (pack_id, idx, template_id, params) VALUES (?,?,?,?)",
+                            (pack_id, idx, template_id, json.dumps(own) if own else None))
         await _apply(t, user_id, -cost, "pack", str(pack_id))
         row = await t.fetchone("SELECT * FROM packs WHERE id=?", (pack_id,))
     return pack_view(row), True
@@ -214,9 +295,15 @@ async def create_pack(
 def pack_view(row) -> dict:
     items = json.loads(row["items"])
     params = json.loads(row["params"])
+    keys = row.keys()
+    done = row["done"] if "done" in keys else 0
+    failed = row["failed_items"] if "failed_items" in keys else 0
     if row["status"] == "processing":
+        # реальная сборка: доля добавленных элементов; имитация — по времени. Берём большее, не выше 0.99
+        by_items = (done + failed) / row["count"] if row["count"] else 0
         elapsed = time.time() - row["created_at"]
-        progress = min(0.99, elapsed / row["duration_s"]) if row["duration_s"] > 0 else 0.99
+        by_time = min(0.95, elapsed / row["duration_s"]) if row["duration_s"] > 0 else 0
+        progress = min(0.99, max(by_items, by_time))
     else:
         progress = 1.0 if row["status"] == "ready" else 0.0
     return {
@@ -225,12 +312,14 @@ def pack_view(row) -> dict:
         "title": row["title"],
         "status": row["status"],
         "count": row["count"],
+        "done": done,
+        "failed": failed,                      # элементы, которые не удалось собрать (генерации за них вернулись)
+        "error": row["error"] if "error" in keys else None,
         "link": row["link"],
         "progress": round(progress, 3),
         "created_at": row["created_at"],
         "preview": items[:4],
-        "items": items,
-        "params": {"text": params.get("text", ""), "fill": params.get("fill"), "stroke": params.get("stroke")},
+        "params": {"text": params.get("text", ""), "color": params.get("color"), "stroke": params.get("stroke")},
     }
 
 
@@ -266,25 +355,38 @@ async def finish_pack(db: Database, settings: Settings, pack_id: int, link: str)
             "UPDATE users SET trial_exports_left = MAX(trial_exports_left - 1, 0) WHERE id=?", (uid,)
         )
         result = FinishResult(user_id=uid, pack=pack_view(pack))
-
-        user = await t.fetchone("SELECT referred_by, referral_rewarded FROM users WHERE id=?", (uid,))
-        if user["referred_by"] and user["referral_rewarded"] == 0:
-            referrer = user["referred_by"]
-            today = await t.fetchone(
-                "SELECT COUNT(*) AS n FROM ledger WHERE user_id=? AND reason='referral' AND created_at >= ?",
-                (referrer, now() - 86400),
-            )
-            total = await t.fetchone(
-                "SELECT COUNT(*) AS n FROM ledger WHERE user_id=? AND reason='referral'", (referrer,)
-            )
-            if today["n"] >= settings.referral_daily_cap or total["n"] >= settings.referral_lifetime_cap:
-                await t.execute("UPDATE users SET referral_rewarded=2 WHERE id=?", (uid,))  # упёрлись в лимит
-            else:
-                if await _apply(t, referrer, settings.referral_reward, "referral", str(uid)):
-                    result.reward_user_id = referrer
-                    result.reward_amount = settings.referral_reward
-                await t.execute("UPDATE users SET referral_rewarded=1 WHERE id=?", (uid,))
+        reward = await _maybe_reward_referrer(t, settings, uid)
+        if reward:
+            result.reward_user_id, result.reward_amount = reward
     return result
+
+
+async def _maybe_reward_referrer(t: Tx, settings: Settings, uid: int) -> tuple[int, int] | None:
+    """Награда пригласившему — один раз, когда приглашённый И собрал пак, И сделал хотя бы одну покупку.
+
+    Только «собрал пак» фармится бесплатно (пак из 1 эмодзи на подарочной генерации с фейкового аккаунта),
+    поэтому нужен реальный покупатель. Вызывается и после сборки пака, и после оплаты — что случится позже.
+    Если пригласивший упёрся в суточный/общий лимит, награда не сгорает: выдастся при следующем событии."""
+    user = await t.fetchone(
+        "SELECT referred_by, referral_rewarded, purchased_total FROM users WHERE id=?", (uid,)
+    )
+    if user is None or not user["referred_by"] or user["referral_rewarded"] == 1 or user["purchased_total"] <= 0:
+        return None
+    has_pack = await t.fetchone("SELECT 1 FROM packs WHERE user_id=? AND status='ready' LIMIT 1", (uid,))
+    if has_pack is None:
+        return None
+    referrer = user["referred_by"]
+    today = await t.fetchone(
+        "SELECT COUNT(*) AS n FROM ledger WHERE user_id=? AND reason='referral' AND created_at >= ?",
+        (referrer, now() - 86400),
+    )
+    total = await t.fetchone("SELECT COUNT(*) AS n FROM ledger WHERE user_id=? AND reason='referral'", (referrer,))
+    if today["n"] >= settings.referral_daily_cap or total["n"] >= settings.referral_lifetime_cap:
+        return None  # лимит: остаётся в ожидании
+    await t.execute("UPDATE users SET referral_rewarded=1 WHERE id=?", (uid,))
+    if await _apply(t, referrer, settings.referral_reward, "referral", str(uid)):
+        return referrer, settings.referral_reward
+    return None
 
 
 async def fail_pack(db: Database, pack_id: int) -> int | None:
@@ -298,6 +400,59 @@ async def fail_pack(db: Database, pack_id: int) -> int | None:
         return pack["user_id"]
 
 
+async def fail_pack_with_error(db: Database, pack_id: int, error: str) -> int | None:
+    """Как fail_pack, но запоминает код причины (показывается пользователю)."""
+    async with db.tx() as t:
+        await t.execute("UPDATE packs SET error=? WHERE id=? AND status='processing'", (error[:200], pack_id))
+    return await fail_pack(db, pack_id)
+
+
+# ───────────────────────── сборка по элементам (настоящие наборы Telegram) ─────────────────────────
+
+async def build_state(db: Database, pack_id: int) -> tuple[Any, list[Any]] | None:
+    """Пак и его элементы по порядку. None — пака нет или он уже не в сборке."""
+    pack = await db.fetchone("SELECT * FROM packs WHERE id=?", (pack_id,))
+    if pack is None or pack["status"] != "processing":
+        return None
+    items = await db.fetchall("SELECT * FROM pack_items WHERE pack_id=? ORDER BY idx", (pack_id,))
+    return pack, items
+
+
+async def set_pack_set_name(db: Database, pack_id: int, set_name: str) -> str:
+    """Имя набора фиксируется один раз: при повторной сборке используется уже записанное."""
+    async with db.tx() as t:
+        await t.execute("UPDATE packs SET set_name=? WHERE id=? AND set_name IS NULL", (set_name, pack_id))
+        row = await t.fetchone("SELECT set_name FROM packs WHERE id=?", (pack_id,))
+    return row["set_name"]
+
+
+async def mark_items(db: Database, pack_id: int, idxs: list[int], status: str, error: str | None = None) -> None:
+    if not idxs:
+        return
+    async with db.tx() as t:
+        for idx in idxs:
+            await t.execute("UPDATE pack_items SET status=?, error=? WHERE pack_id=? AND idx=? AND status='pending'",
+                            (status, error[:200] if error else None, pack_id, idx))
+        await t.execute(
+            "UPDATE packs SET done=(SELECT COUNT(*) FROM pack_items WHERE pack_id=? AND status='added'),"
+            " failed_items=(SELECT COUNT(*) FROM pack_items WHERE pack_id=? AND status='failed') WHERE id=?",
+            (pack_id, pack_id, pack_id),
+        )
+
+
+async def refund_failed_items(db: Database, pack_id: int) -> int:
+    """Возвращает генерации за элементы, которые не удалось собрать (один раз на пак). → сколько вернули."""
+    async with db.tx() as t:
+        pack = await t.fetchone("SELECT user_id FROM packs WHERE id=?", (pack_id,))
+        row = await t.fetchone("SELECT COUNT(*) AS n FROM pack_items WHERE pack_id=? AND status='failed'", (pack_id,))
+        n = row["n"]
+        if pack is None or n == 0:
+            return 0
+        if not await _apply(t, pack["user_id"], n, "pack_partial_refund", str(pack_id)):
+            return 0
+    return n
+
+
 async def processing_pack_ids(db: Database) -> list[int]:
     rows = await db.fetchall("SELECT id FROM packs WHERE status='processing' ORDER BY id")
     return [r["id"] for r in rows]
@@ -308,7 +463,8 @@ async def processing_pack_ids(db: Database) -> list[int]:
 async def referral_stats(db: Database, settings: Settings, user_id: int) -> dict:
     invited = await db.fetchone("SELECT COUNT(*) AS n FROM users WHERE referred_by=?", (user_id,))
     created = await db.fetchone(
-        "SELECT COUNT(*) AS n FROM users WHERE referred_by=? AND referral_rewarded IN (1,2)", (user_id,)
+        "SELECT COUNT(*) AS n FROM users u WHERE u.referred_by=? "
+        "AND EXISTS (SELECT 1 FROM packs p WHERE p.user_id=u.id AND p.status='ready')", (user_id,)
     )
     earned = await db.fetchone(
         "SELECT COALESCE(SUM(delta),0) AS n FROM ledger WHERE user_id=? AND reason='referral'", (user_id,)
@@ -332,11 +488,8 @@ async def add_style(db: Database, settings: Settings, user_id: int, name: str, p
     name = clean_text(name, 32)
     if not name:
         raise ValidationFailed("name")
-    fill = params.get("fill") or DEFAULT_FILL
-    stroke = params.get("stroke") or DEFAULT_STROKE
-    if not (HEX_COLOR.match(str(fill)) and HEX_COLOR.match(str(stroke))):
-        raise ValidationFailed("color")
-    clean = {"text": clean_text(params.get("text"), settings.text_max), "fill": fill.lower(), "stroke": stroke.lower()}
+    clean = {"text": clean_text(params.get("text"), settings.text_max), "color": clean_color(params.get("color")),
+             "stroke": clean_color(params.get("stroke"))}
     async with db.tx() as t:
         user = await t.fetchone("SELECT plan FROM users WHERE id=?", (user_id,))
         if user is None or user["plan"] != "pro":
@@ -380,6 +533,8 @@ class SettleResult:
     balance: int
     status: str            # 'credited' | 'needs_review'
     repeat: bool = False   # человек заплатил по тому же счёту ещё раз
+    reward_user_id: int | None = None  # первая покупка приглашённого открыла награду пригласившему
+    reward_amount: int = 0
 
 
 def _plan_for(settings: Settings, purchased_total: int) -> str:
@@ -436,8 +591,12 @@ async def settle_payment(
             "UPDATE payment_events SET status=? WHERE provider=? AND charge_id=?",
             ("credited_repeat" if repeat else "credited", provider, charge_id),
         )
+        reward = await _maybe_reward_referrer(t, settings, user_id)
         balance = (await t.fetchone("SELECT balance FROM users WHERE id=?", (user_id,)))["balance"]
-    return SettleResult(user_id=user_id, qty=order["qty"], balance=balance, status="credited", repeat=repeat)
+    result = SettleResult(user_id=user_id, qty=order["qty"], balance=balance, status="credited", repeat=repeat)
+    if reward:
+        result.reward_user_id, result.reward_amount = reward
+    return result
 
 
 async def payment_status(db: Database, user_id: int, payment_id: str) -> str | None:
@@ -447,6 +606,20 @@ async def payment_status(db: Database, user_id: int, payment_id: str) -> str | N
 
 
 # ───────────────────────── возвраты (вызывает администратор) ─────────────────────────
+
+def _attempt_ref(charge_id: str, attempt: int) -> str:
+    # первая попытка — просто charge_id (совместимо с уже записанным журналом), дальше charge_id:N
+    return charge_id if attempt <= 1 else f"{charge_id}:{attempt}"
+
+
+async def _refund_attempts(t: Tx, charge_id: str) -> int:
+    prefix = f"{charge_id}:"
+    row = await t.fetchone(
+        "SELECT COUNT(*) AS n FROM ledger WHERE reason='refund' AND (ref=? OR substr(ref, 1, ?)=?)",
+        (charge_id, len(prefix), prefix),
+    )
+    return row["n"]
+
 
 async def begin_refund(db: Database, settings: Settings, charge_id: str, provider: str = "stars") -> tuple[int, int]:
     """Снимает начисленные генерации и помечает платёж «refunding». Возвращает (user_id, qty).
@@ -461,8 +634,11 @@ async def begin_refund(db: Database, settings: Settings, charge_id: str, provide
         if order is None:
             raise RefundError("unknown")
         qty = order["qty"]
+        # каждая попытка возврата — отдельная запись журнала: после «Telegram отказал → revert» повторный
+        # /refund обязан снова снять генерации (UNIQUE(reason, ref) иначе молча проглотил бы вторую запись)
+        attempt = await _refund_attempts(t, charge_id) + 1
         try:
-            await _apply(t, ev["user_id"], -qty, "refund", charge_id)
+            await _apply(t, ev["user_id"], -qty, "refund", _attempt_ref(charge_id, attempt))
         except InsufficientBalance:
             raise RefundError("spent")
         user = await t.fetchone("SELECT purchased_total FROM users WHERE id=?", (ev["user_id"],))
@@ -485,7 +661,8 @@ async def revert_refund(db: Database, settings: Settings, charge_id: str, provid
         if ev is None or ev["status"] != "refunding":
             return
         order = await t.fetchone("SELECT qty FROM payments WHERE id=?", (ev["payload"],))
-        await _apply(t, ev["user_id"], order["qty"], "refund_revert", charge_id)
+        attempt = await _refund_attempts(t, charge_id)  # откатываем именно последнюю попытку
+        await _apply(t, ev["user_id"], order["qty"], "refund_revert", _attempt_ref(charge_id, attempt))
         user = await t.fetchone("SELECT purchased_total FROM users WHERE id=?", (ev["user_id"],))
         purchased = user["purchased_total"] + order["qty"]
         await t.execute("UPDATE users SET purchased_total=?, plan=? WHERE id=?",

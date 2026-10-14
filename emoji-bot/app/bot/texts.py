@@ -4,7 +4,6 @@ from __future__ import annotations
 from ..ru import gens
 
 BTN_OPEN = "открыть редактор"
-BTN_OPEN_PACK = "открыть пак"
 MENU_BUTTON = "открыть"
 
 
@@ -37,11 +36,21 @@ def long_description(brand: str) -> str:
     )
 
 
-def pack_ready(title: str, count: int, demo: bool) -> str:
-    text = f"пак «{title}» готов ✨\nвнутри: {count}"
+BTN_VIEW_RESULT = "посмотреть результат"
+BTN_SEND_FRIEND = "отправить другу"
+
+
+def pack_ready(name: str, demo: bool, failed: int = 0) -> str:
+    text = f"🥳 пак {name} создан!"
+    if failed:
+        text += f"\n\nне получилось собрать {failed}: генерации за них вернули на баланс."
     if demo:
-        text += "\n\nэто демо-сборка: настоящие наборы подключим на следующем этапе."
+        text += "\n\nэто демо-сборка: настоящий набор в Telegram не создавался."
     return text
+
+
+def share_text(kind: str) -> str:
+    return "смотри, какие эмодзи я собрал" if kind == "emoji" else "смотри, какие стикеры я собрал"
 
 
 def pack_failed() -> str:
@@ -49,7 +58,7 @@ def pack_failed() -> str:
 
 
 def referral_reward(amount: int) -> str:
-    return f"друг собрал первый пак: тебе +{gens(amount)} 🎁"
+    return f"друг собрал первый пак и купил генерации: тебе +{gens(amount)} 🎁"
 
 
 def payment_ok(qty: int, balance: int) -> str:
@@ -90,7 +99,24 @@ REFUND_ERRORS = {
 }
 REFUND_DONE = "возврат выполнен: Stars вернулись пользователю, генерации сняты с баланса"
 REFUND_FAILED = "Telegram не вернул Stars, генерации возвращены пользователю на баланс. подробности в логе"
+REFUND_UNKNOWN = (
+    "Telegram не ответил, и проверить исход не удалось. платёж оставлен в статусе «возврат», "
+    "генерации сняты. проверь журнал Stars и при необходимости повтори /refund"
+)
 
 
 def refund_user_notice(qty: int) -> str:
     return f"возврат оплаты выполнен: Stars вернулись на твой счёт, {gens(qty)} сняты с баланса."
+
+
+MAINTENANCE = "🔧 сейчас идут технические работы. загляни чуть позже — всё сохранится."
+PROMO_USAGE = "введи промокод так: /promo КОД"
+PROMO_ERRORS = {
+    "unknown": "такого промокода нет. проверь, как он написан.",
+    "used": "этот промокод ты уже активировал.",
+    "exhausted": "у этого промокода закончились активации.",
+}
+
+
+def promo_ok(gens: int, balance: int) -> str:
+    return f"🎟 промокод активирован: +{gens} генераций. на балансе {balance}."

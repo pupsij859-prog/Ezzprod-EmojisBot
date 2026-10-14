@@ -76,14 +76,64 @@
 .chip:active { transform: scale(0.94); }
 .chip__icon { width: 14px; height: 14px; color: var(--gold); }
 
+/* шапка закреплена: при прокрутке контент уходит под стеклянные капсулы и размывается */
 .topbar {
+  position: sticky; top: 0; z-index: 6;
   display: flex; align-items: center; gap: var(--s-2);
-  min-height: 30px;
-  padding: calc(20px + var(--safe-top)) var(--page-x) 0;
+  padding: calc(14px + var(--safe-top)) var(--page-x) 10px;
 }
-.topbar__who { display: inline-flex; align-items: center; gap: 11px; min-width: 0; }
-.topbar__handle { font: 700 16.5px/1.1 var(--font); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar::before {
+  content: ''; position: absolute; inset: 0 0 -22px 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(180deg, var(--bg) 0%, rgba(10, 10, 10, 0.82) 48%, rgba(10, 10, 10, 0) 100%);
+}
+.topbar__who { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 66%; height: 40px; padding: 4px 14px 4px 4px; border-radius: 999px; }
+.topbar__who .avatar { width: 32px; height: 32px; font-size: 13px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12); }
+.topbar__handle { font: 700 15px/1.1 var(--font); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar__spacer { flex: 1; }
+
+/* ───────── капсулы шапки: плотная графитовая «эмаль» без размытия, по кайме бегает огонёк ───────── */
+@property --pill-a { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+.pill {
+  position: relative; isolation: isolate;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, #202024 0%, #141417 100%) padding-box,
+    linear-gradient(140deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.05) 40%, rgba(255, 255, 255, 0.04) 64%, rgba(120, 170, 255, 0.34) 100%) border-box;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -6px 12px rgba(0, 0, 0, 0.35), 0 8px 22px rgba(0, 0, 0, 0.5);
+  transition: transform 420ms var(--ease-spring), box-shadow 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+/* огонёк по кайме: виден только в рамке шириной 1px */
+.pill::before {
+  content: ''; position: absolute; inset: -1px; z-index: -1; padding: 1px; border-radius: inherit; pointer-events: none;
+  background: conic-gradient(from var(--pill-a), transparent 0 72%, rgba(143, 220, 255, 0.95) 86%, rgba(190, 150, 255, 0.8) 92%, transparent 98%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: pill-orbit 7s linear infinite;
+}
+.chip--balance.pill::before { animation-delay: -3.5s; }
+@keyframes pill-orbit { to { --pill-a: 360deg; } }
+.pill.is-pressed {
+  transform: scale(0.95);
+  transition: transform 120ms var(--ease), box-shadow 120ms ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 -4px 10px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(143, 220, 255, 0.12);
+}
+.pill:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.7); outline-offset: 2px; }
+
+.chip--balance.pill { height: 40px; gap: 7px; padding: 0 14px 0 4px; font: 800 15px/1 var(--font); border-radius: 999px; }
+.chip__gem {
+  width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #d8f3ff 0%, #6fcfff 42%, #2a7fc0 100%);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.6), inset 0 -2px 4px rgba(0, 40, 80, 0.35), 0 4px 12px rgba(79, 195, 255, 0.25);
+}
+.chip--balance .chip__icon { width: 14px; height: 14px; color: #fff; filter: drop-shadow(0 1px 1px rgba(0, 40, 80, 0.4)); }
+.chip--balance.is-bump { animation: chip-bump 560ms var(--ease-spring); }
+@keyframes chip-bump { 30% { transform: scale(1.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .pill, .pill.is-pressed { transition: none; }
+  .pill::before { animation: none; }
+  .chip--balance.is-bump { animation: none; }
+}
 
 /* ───────── нижняя навигация: плавающая стеклянная капсула, как в новом Telegram (js/tabbar.js) ───────── */
 .dock {
@@ -425,7 +475,18 @@ body.has-cart .screen--home::after { height: calc(var(--dock-h) + 96px); }
 .field--box:focus { box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.55); }
 
 .badge { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: var(--r-pill); font: 700 11px/1 var(--font); letter-spacing: 0.04em; text-transform: uppercase; }
-.badge--pro { background: rgba(226, 194, 98, 0.14); color: var(--gold); box-shadow: inset 0 0 0 1px rgba(226, 194, 98, 0.35); }
+/* Pro: «голографический» жетон — переливается, как плёнка на карте */
+.badge--pro {
+  gap: 4px; height: 22px; padding: 0 8px 0 6px; flex: none;
+  font: 800 11px/1 var(--font); letter-spacing: 0.06em; text-transform: none; color: #17112b;
+  background: linear-gradient(105deg, #a8ecff 0%, #d4b8ff 24%, #ffc2e6 46%, #fff0b3 64%, #a8ffd9 82%, #a8ecff 100%);
+  background-size: 240% 100%;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), inset 0 -1px 0 rgba(40, 20, 80, 0.18), 0 2px 10px rgba(180, 150, 255, 0.28);
+  animation: pro-sheen 4.5s linear infinite;
+}
+.badge--pro .badge__icon { width: 12px; height: 12px; stroke-width: 2.2; }
+@keyframes pro-sheen { to { background-position: -240% 0; } }
+@media (prefers-reduced-motion: reduce) { .badge--pro { animation: none; } }
 .badge--error { background: rgba(240, 135, 132, 0.14); color: var(--danger); }
 
 .swatch { position: relative; width: 32px; height: 32px; flex: none; cursor: pointer; }
@@ -480,3 +541,19 @@ body.has-cart .screen--home::after { height: calc(var(--dock-h) + 96px); }
 .empty__title { font: 700 20px/1.2 var(--font); }
 .empty__text { color: var(--text-2); max-width: 280px; }
 .empty .btn { margin-top: var(--s-2); }
+
+/* ───────── шаблон TGS: статичная картинка, поверх — анимация (js/tgs.js) ───────── */
+.tgs { position: relative; display: block; width: 78%; aspect-ratio: 1; pointer-events: none; }
+.tgs__thumb, .tgs__anim { position: absolute; inset: 0; width: 100% !important; height: 100% !important; object-fit: contain; }
+.tgs__anim svg { display: block; width: 100% !important; height: 100% !important; }
+.tgs__thumb.is-broken { opacity: 0.2; }
+.tgrid .tcard .tgs { width: 80%; filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.45)); }
+.tgs--strip { width: 86%; }
+.tgs--hero { width: min(62vw, 230px); }
+.tcard .tgs__thumb, .strip__item .tgs__thumb { filter: none; }
+
+/* цвет надписи: «родной» — шахматный кружок вместо цвета */
+.swatch__dot.is-own { background: conic-gradient(#f2f2f2 0 25%, #8a8a8f 0 50%, #f2f2f2 0 75%, #8a8a8f 0) 0 0 / 10px 10px; box-shadow: 0 0 0 1.5px var(--line-strong); }
+.color-reset { font: 600 13px/1 var(--font); color: var(--text-3); padding: 6px 10px; margin-right: 2px; border-radius: 999px; background: var(--surface-2); }
+.color-reset:active { color: var(--text); }
+.style__dots i.is-own { background: conic-gradient(#f2f2f2 0 25%, #8a8a8f 0 50%, #f2f2f2 0 75%, #8a8a8f 0) 0 0 / 8px 8px; }

@@ -106,9 +106,10 @@ def _who(row, user_id: int) -> dict:
             "last_name": row["last_name"] or ""}
 
 
-async def refund(ctx: Context, provider: str, charge_id: str) -> tuple[bool, int, int]:
+async def refund(ctx: Context, provider: str, charge_id: str) -> tuple[bool | None, int, int]:
     """Возврат платежа: снимаем генерации, возвращаем деньги, при отказе Telegram откатываем.
-    → (успех, user_id, qty). Ошибки предусловий — services.RefundError."""
+    → (успех, user_id, qty). успех=None — исход неизвестен (сбой сети): платёж остаётся «refunding»,
+    генерации не возвращаются автоматически, админу уходит алерт. Ошибки предусловий — services.RefundError."""
     if provider not in ("stars", "dev"):
         raise services.RefundError("unknown")
     if provider == "dev" and not ctx.settings.dev_mode:
@@ -118,18 +119,61 @@ async def refund(ctx: Context, provider: str, charge_id: str) -> tuple[bool, int
 
     user_id, qty = await services.begin_refund(ctx.db, ctx.settings, charge_id, provider)
     if provider == "dev":  # эмулированная оплата: денег нет, Telegram не вызываем
-        ok = True
+        ok: bool | None = True
     else:
-        try:
-            ok = bool(await ctx.bot.refund_star_payment(user_id=user_id, telegram_payment_charge_id=charge_id))
-        except Exception:
-            log.exception("refundStarPayment не удался: charge=%s", charge_id)
-            ok = False
-    if ok:
+        ok = await _refund_stars(ctx, user_id, charge_id)
+    if ok is True:
         await services.finish_refund(ctx.db, charge_id, provider)
-    else:
+    elif ok is False:
         await services.revert_refund(ctx.db, ctx.settings, charge_id, provider)
+    else:
+        log.error("исход возврата неизвестен: charge=%s user=%s — нужна ручная проверка", charge_id, user_id)
+        await _safe_alert(ctx, f"возврат charge={charge_id} user={user_id}: Telegram не ответил, исход неизвестен. "
+                               "платёж оставлен в статусе «возврат», проверь в Stars и повтори или откати вручную")
     return ok, user_id, qty
+
+
+async def _refund_stars(ctx: Context, user_id: int, charge_id: str) -> bool | None:
+    """True — Stars вернулись, False — Telegram явно отказал, None — неизвестно (таймаут, сеть)."""
+    from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+
+    try:
+        return bool(await ctx.bot.refund_star_payment(user_id=user_id, telegram_payment_charge_id=charge_id))
+    except TelegramNetworkError:
+        log.warning("refundStarPayment: сеть, проверяем журнал Stars: charge=%s", charge_id)
+    except TelegramAPIError:
+        # Telegram ответил ошибкой — возврата точно не было
+        log.exception("refundStarPayment отклонён: charge=%s", charge_id)
+        return False
+    except Exception:
+        log.exception("refundStarPayment: неожиданная ошибка, проверяем журнал Stars: charge=%s", charge_id)
+    return await _refund_seen(ctx, charge_id)
+
+
+async def _refund_seen(ctx: Context, charge_id: str, max_pages: int = 20) -> bool | None:
+    """Ищет в журнале Stars возврат с тем же id (у возврата id совпадает с исходным платежом)."""
+    try:
+        offset = 0
+        for _ in range(max_pages):
+            page = await ctx.bot.get_star_transactions(offset=offset, limit=100)
+            items = list(page.transactions or [])
+            for tx in items:
+                receiver = getattr(tx, "receiver", None)
+                if str(tx.id) == charge_id and receiver is not None and getattr(receiver, "type", None) == "user":
+                    return True
+            if len(items) < 100:
+                return False
+            offset += len(items)
+    except Exception:
+        log.exception("не удалось проверить журнал Stars для charge=%s", charge_id)
+    return None
+
+
+async def _safe_alert(ctx: Context, text: str) -> None:
+    try:
+        await ctx.notifier.admin_alert(text)
+    except Exception:
+        log.exception("не удалось отправить алерт админу")
 
 
 async def notify_refunded(ctx: Context, user_id: int, qty: int) -> None:

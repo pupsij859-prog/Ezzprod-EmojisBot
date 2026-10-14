@@ -2,15 +2,23 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import quote
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, WebAppInfo
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    WebAppInfo,
+)
 
 from ..config import Settings
 from ..context import Context
-from . import handlers, texts
+from . import admin_panel, handlers, texts
 
 log = logging.getLogger("ezzprod.bot")
 
@@ -24,8 +32,10 @@ def create_dispatcher(ctx: Context) -> Dispatcher:
     dp = Dispatcher(ctx=ctx)  # ctx попадает в хендлеры как именованный аргумент
     # роутер модульный, а aiogram разрешает ему иметь только одного родителя: отцепляем от прошлого диспетчера
     # (нужно при повторном создании в одном процессе: перезапуск бота, тесты)
-    if handlers.router.parent_router is not None:
-        handlers.router._parent_router = None
+    for router in (admin_panel.router, handlers.router):
+        if router.parent_router is not None:
+            router._parent_router = None
+    dp.include_router(admin_panel.router)  # раньше основного: у того в конце «всё остальное»
     dp.include_router(handlers.router)
     return dp
 
@@ -43,12 +53,16 @@ class TelegramNotifier:
 
     async def pack_ready(self, user_id: int, pack: dict) -> None:
         s = self._ctx.settings
+        link = pack.get("link") or ""
         markup = None
-        if pack.get("link", "").startswith("https://"):
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_OPEN_PACK, url=pack["link"])]]
-            )
-        await self._send(user_id, texts.pack_ready(pack["title"], pack["count"], s.demo_mode), markup)
+        if link.startswith("https://"):
+            share = f"https://t.me/share/url?url={quote(link, safe='')}&text={quote(texts.share_text(pack['type']), safe='')}"
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=texts.BTN_VIEW_RESULT, url=link)],
+                [InlineKeyboardButton(text=texts.BTN_SEND_FRIEND, url=share)],
+            ])
+        name = (pack.get("params") or {}).get("text") or s.brand_name
+        await self._send(user_id, texts.pack_ready(name, s.demo_mode, pack.get("failed", 0)), markup)
 
     async def pack_failed(self, user_id: int, pack_id: int) -> None:
         await self._send(user_id, texts.pack_failed())
@@ -60,8 +74,13 @@ class TelegramNotifier:
         await self._send(user_id, texts.payment_ok(qty, balance))
 
     async def admin_alert(self, text: str) -> None:
-        for admin_id in self._ctx.settings.admin_ids:
+        for admin_id in {*self._ctx.settings.admin_ids, *self._ctx.extra_admins}:
             await self._send(admin_id, text)
+
+
+async def set_menu_button(bot: Bot, url: str) -> None:
+    """Кнопка «открыть» внизу чата у всех пользователей ведёт в Mini App по этому адресу."""
+    await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text=texts.MENU_BUTTON, web_app=WebAppInfo(url=url)))
 
 
 async def configure_bot(bot: Bot, ctx: Context) -> None:
@@ -77,24 +96,22 @@ async def configure_bot(bot: Bot, ctx: Context) -> None:
         except Exception as exc:
             log.warning("не удалось настроить %s: %s", label, exc)
 
-    if s.webapp_url.startswith("https://"):
-        await attempt(
-            "кнопку меню",
-            bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(text=texts.MENU_BUTTON, web_app=WebAppInfo(url=s.webapp_url))
-            ),
-        )
+    if ctx.webapp_url.startswith("https://"):
+        await attempt("кнопку меню", set_menu_button(bot, ctx.webapp_url))
     else:
         log.warning("WEBAPP_URL не https — кнопка Mini App в боте недоступна (нужен туннель)")
-    await attempt(
-        "команды",
-        bot.set_my_commands([
-            BotCommand(command="start", description="открыть редактор"),
-            BotCommand(command="help", description="как это работает"),
-            BotCommand(command="terms", description="условия покупки"),
-            BotCommand(command="support", description="поддержка"),
-            BotCommand(command="paysupport", description="вопросы по оплате и возврат"),
-        ]),
-    )
+    commands = [
+        BotCommand(command="start", description="открыть редактор"),
+        BotCommand(command="promo", description="активировать промокод"),
+        BotCommand(command="help", description="как это работает"),
+        BotCommand(command="terms", description="условия покупки"),
+        BotCommand(command="support", description="поддержка"),
+        BotCommand(command="paysupport", description="вопросы по оплате и возврат"),
+    ]
+    await attempt("команды", bot.set_my_commands(commands))
+    # админам в меню команд ещё и /admin (остальные её не видят)
+    for admin_id in {*s.admin_ids, *ctx.extra_admins}:
+        await attempt(f"команды админа {admin_id}", bot.set_my_commands(
+            [BotCommand(command="admin", description="админка"), *commands], scope=BotCommandScopeChat(chat_id=admin_id)))
     await attempt("описание", bot.set_my_description(texts.long_description(s.brand_name)))
     await attempt("короткое описание", bot.set_my_short_description(texts.short_description(s.brand_name)))

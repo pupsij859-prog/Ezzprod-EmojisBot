@@ -84,7 +84,16 @@ def _pairs(name: str) -> tuple[tuple[str, str], ...]:
 
 
 def _is_local_url(url: str) -> bool:
-    return url == "" or url.startswith(("http://localhost", "http://127.0.0.1", "http://[::1]"))
+    # сравниваем именно имя хоста: «http://localhost.evil.com» не локальный
+    if url == "":
+        return True
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +103,7 @@ class Settings:
     webapp_url: str = ""            # публичный https-адрес Mini App
     brand_name: str = "EzzProd"
     support_username: str = ""      # без @; куда ведёт «поддержка»
+    public_url_file: str = ""       # временный туннель: файл с текущим адресом Mini App (см. tools/tunnel.py)
     admin_ids: tuple[int, ...] = () # кому доступны /refund, алерты по платежам и «Админка» в Mini App
     custom_emoji: tuple[tuple[str, str], ...] = ()  # ключ:custom_emoji_id, дополняет app/emoji.py
     bot_proxy: str = ""             # например socks5://127.0.0.1:1080, если Telegram API недоступен напрямую
@@ -155,6 +165,7 @@ class Settings:
             webapp_url=_str("WEBAPP_URL").rstrip("/"),
             brand_name=_str("BRAND_NAME", "EzzProd") or "EzzProd",
             support_username=_str("SUPPORT_USERNAME").lstrip("@"),
+            public_url_file=_str("PUBLIC_URL_FILE"),
             admin_ids=_int_list("ADMIN_IDS"),
             custom_emoji=_pairs("CUSTOM_EMOJI"),
             bot_proxy=_str("BOT_PROXY"),

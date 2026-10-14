@@ -71,16 +71,37 @@ class PackRunner:
         self.builder = builder
         self.notifier = notifier
         self._tasks: set[asyncio.Task] = set()
+        self._running: set[int] = set()
 
     def start(self, pack_id: int, duration_s: float) -> None:
+        if pack_id in self._running:
+            return
+        self._running.add(pack_id)
         task = asyncio.create_task(self._run(pack_id, duration_s), name=f"pack-{pack_id}")
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def done(t: asyncio.Task) -> None:
+            self._tasks.discard(t)
+            self._running.discard(pack_id)
+
+        task.add_done_callback(done)
 
     async def recover(self) -> None:
-        """После перезапуска дособираем зависшие паки (в имитации — сразу)."""
+        """Дособираем паки, которые висят в processing без запущенной сборки (после перезапуска или
+        если запись результата не удалась несколько раз). В имитации — сразу."""
         for pack_id in await services.processing_pack_ids(self.db):
             self.start(pack_id, 0.0)
+
+    async def watch(self, interval_s: float = 60.0) -> None:
+        """Фоновый сторож: периодически подхватывает зависшие паки (иначе они ждали бы перезапуска процесса)."""
+        while True:
+            await asyncio.sleep(interval_s)
+            try:
+                await self.recover()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("проверка зависших паков не удалась")
 
     async def _run(self, pack_id: int, duration_s: float) -> None:
         # 1) сборка: её сбой — единственная причина вернуть генерации
@@ -88,9 +109,9 @@ class PackRunner:
             result = await self.builder.build(pack_id, duration_s)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             log.exception("сборка пака %s не удалась, возвращаем генерации", pack_id)
-            user_id = await services.fail_pack(self.db, pack_id)
+            user_id = await services.fail_pack_with_error(self.db, pack_id, getattr(exc, "code", "build_failed"))
             if user_id is not None:
                 await self._safe(self.notifier.pack_failed, user_id, pack_id)
             return

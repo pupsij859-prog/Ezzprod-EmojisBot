@@ -1,7 +1,7 @@
 // Мелкие помощники для DOM. Весь пользовательский текст попадает в DOM только через textContent.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const ICONS_VERSION = '4'; // меняй при правке assets/icons.svg: спрайт кэшируется браузером на час
+const ICONS_VERSION = '5'; // меняй при правке assets/icons.svg: спрайт кэшируется браузером на час
 
 function append(el, children) {
   for (const child of children) {

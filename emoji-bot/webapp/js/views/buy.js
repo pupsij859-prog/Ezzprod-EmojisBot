@@ -14,6 +14,12 @@ const PACK_EMOJI = ['sparkle', 'fire', 'gift', 'party', 'gem', 'crown'];
 // цвет свечения за эмодзи карточки
 const PACK_GLOW = ['#ffc83d', '#ff6a2b', '#ff4d4d', '#ff5fd2', '#55b8ff', '#ffb92e'];
 
+/** Эмодзи и цвет свечения пакета — одинаковые на экране покупки и в профиле. */
+export function packLook(qty) {
+  const i = Math.max(0, presets().indexOf(qty));
+  return { emoji: PACK_EMOJI[i % PACK_EMOJI.length], glow: PACK_GLOW[i % PACK_GLOW.length] };
+}
+
 /** Пакеты: 5, 10, 20, порог скидки, порог оптовой цены, 100 — в пределах max_qty. */
 export function presets() {
   const p = state.pricing;
@@ -130,13 +136,6 @@ function perk(qty) {
   return save > 0 ? `−${save} ₽` : `${p.unit} ₽/шт`;
 }
 
-// плюсы под сеткой: иконка + короткая подпись
-const PERKS = [
-  { icon: 'sparkle-fill', text: 'Не сгорают' },
-  { icon: 'check', text: 'Ник и лого в цене' },
-  { icon: 'refresh', text: 'Вернём при сбое' },
-];
-
 export function openBuy({ qty } = {}) {
   let off = () => {};
   openOverlay({
@@ -199,7 +198,6 @@ export function openBuy({ qty } = {}) {
             h('h1', { class: 'buy__title' }, 'Генерации'),
             h('p', { class: 'buy__sub' }, 'На балансе ', balance, ' ✦ · ', h('em', null, `−${p.discount_pct}% от ${p.discount_from} шт`))),
           h('div', { class: 'bgrid' }, ...cards),
-          h('ul', { class: 'bperks' }, ...PERKS.map((x) => h('li', null, icon(x.icon), x.text))),
           h('p', { class: 'buy__terms buy__terms--center' }, 'Покупая, вы принимаете ', docLink('/docs/terms.html', 'условия'), ' и ', docLink('/docs/refund.html', 'правила возврата')),
           h('div', { class: 'buy__bottom' },
             h('div', { class: 'bbar' }, h('div', { class: 'bbar__stepper' }, minus, count, plus), buyBtn))),

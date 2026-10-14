@@ -6,17 +6,17 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import admin, services
+from .. import admin, runtime, services
 from ..ratelimit import limited
 from .routes import ctx_of, user_row
 
 router = APIRouter(prefix="/api/admin")
 
-CHARGE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+CHARGE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}\Z")
 
 
 async def admin_row(request: Request, row=Depends(user_row)):
-    if not admin.is_admin(ctx_of(request).settings, row["id"]):
+    if not runtime.is_admin(ctx_of(request), row["id"]):
         raise HTTPException(403, {"code": "forbidden"})
     return row
 
@@ -53,7 +53,8 @@ async def refund(charge_id: str, body: RefundIn, request: Request, _=Depends(adm
         raise HTTPException(503 if code == "no_bot" else 409, {"code": f"refund_{code}"})
     if ok:
         await admin.notify_refunded(c, user_id, qty)
-    return {"ok": ok, "status": "refunded" if ok else "credited", "qty": qty}
+    status = "refunded" if ok is True else ("credited" if ok is False else "refunding")
+    return {"ok": ok is True, "status": status, "qty": qty}
 
 
 @router.get("/users")

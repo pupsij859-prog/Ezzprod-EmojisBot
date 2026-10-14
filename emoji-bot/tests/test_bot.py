@@ -190,3 +190,32 @@ async def test_payment_commands_answer(env):
     texts = [m.text for m in session.sent("SendMessage")]
     assert "условия" in texts[0] and "https://app.example.com/docs/terms.html" in texts[0]
     assert "@help_ez" in texts[1] and "@help_ez" in texts[2]
+
+
+async def test_pack_ready_message_has_result_and_share_buttons(env):
+    dp, bot, ctx, session, settings = env
+    link = "https://t.me/addemoji/ez1_abc123_by_ezzbot"
+    pack = {"title": "tg · эмодзи", "type": "emoji", "count": 3, "failed": 0, "link": link, "params": {"text": "tg"}}
+    await ctx.notifier.pack_ready(5, pack)
+    msg = session.sent("SendMessage")[-1]
+    assert msg.text.startswith("🥳 пак tg создан!")
+    rows = msg.reply_markup.inline_keyboard
+    assert [r[0].text for r in rows] == ["посмотреть результат", "отправить другу"]
+    assert rows[0][0].url == link
+    assert rows[1][0].url.startswith("https://t.me/share/url?url=https%3A%2F%2Ft.me%2Faddemoji%2Fez1_abc123_by_ezzbot")
+
+
+async def test_public_url_change_updates_start_button_and_menu(env, tmp_path):
+    from app.public_url import apply_url, read_url
+
+    dp, bot, ctx, session, settings = env
+    f = tmp_path / "url.txt"
+    f.write_text("https://new-addr.lhr.life\n", encoding="utf-8")
+    assert read_url(f) == "https://new-addr.lhr.life"
+    f.write_text("javascript:alert(1)", encoding="utf-8")
+    assert read_url(f) is None                                   # мусор в файле не применяется
+    assert await apply_url(ctx, "https://new-addr.lhr.life") is True
+    assert await apply_url(ctx, "https://new-addr.lhr.life") is False   # тот же адрес — ничего не делаем
+    assert session.sent("SetChatMenuButton")[-1].menu_button.web_app.url == "https://new-addr.lhr.life"
+    await dp.feed_update(bot, command(9, "/start"))
+    assert session.sent("SendPhoto")[-1].reply_markup.inline_keyboard[0][0].web_app.url == "https://new-addr.lhr.life"

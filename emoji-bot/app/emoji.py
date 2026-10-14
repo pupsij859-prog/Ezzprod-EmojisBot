@@ -29,7 +29,7 @@ KEYS: dict[str, str] = {
     "chart": "📊", "money": "💰", "users": "👥", "check": "✅", "clock": "⏱", "pin": "✍️",
     "hand": "☝️", "phone": "📱", "fire": "🔥", "heart": "❤️", "card": "💳",
     "gem": "💎", "oops": "🥲", "party": "🥳", "sad": "😢", "bag": "🛍", "heart_hands": "🫶",
-    "cart": "🛒",
+    "cart": "🛒", "chat": "🤗", "docs": "🧾", "question": "❓",
 }
 
 # ключ → custom_emoji_id премиум-эмодзи (паки Finance Emoji и Kawaii Emoji).
@@ -44,12 +44,13 @@ IDS: dict[str, str] = {
     "gem": "5235630047959727475", "oops": "5294541369874851363", "party": "5328273248448686763",
     "sad": "5391310895768936514", "bag": "5294167145079395967", "heart_hands": "5397890811436213746",
     "cart": "5400090058030075645",
+    "chat": "5456611707386340923", "docs": "5444856076954520455", "question": "5235711188481883685",
 }
 
 # ключи, для которых нарисован webapp/assets/emoji/<ключ>.svg (нет пары в премиум-паках)
 SVG: frozenset[str] = frozenset({"palette", "warn", "lock", "test", "users", "check", "phone", "cart"})
 
-ID_RE = re.compile(r"^\d{1,24}$")
+ID_RE = re.compile(r"^\d{1,24}\Z")
 MAX_BYTES = 2 * 1024 * 1024      # распакованный TGS бывает до ~1 МБ, видео-эмодзи до 256 КБ
 NEGATIVE_TTL = 600               # после ошибки Telegram не спрашиваем этот ID 10 минут
 

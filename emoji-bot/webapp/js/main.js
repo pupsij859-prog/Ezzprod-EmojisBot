@@ -34,7 +34,7 @@ else window.addEventListener('load', () => ensureStyles(), { once: true });
 const TABS = [
   { id: 'home', label: 'Главная', icon: 'home', mount: mountHome },
   { id: 'packs', label: 'Паки', icon: 'packs', mount: mountPacks },
-  { id: 'profile', label: 'Мой профиль', icon: 'user-circle', mount: mountProfile },
+  { id: 'profile', label: 'Профиль', icon: 'user-circle', mount: mountProfile },
   { id: 'admin', label: 'Админка', icon: 'crown', mount: mountAdmin, admin: true },
 ];
 
@@ -95,16 +95,34 @@ function switchTab(id) {
   cleanup = tab.mount(view) || null;
 }
 
+const FATAL = {
+  unauthorized: ['Сессия устарела', 'Закрой приложение и открой его заново из бота'],
+  maintenance: ['Технические работы', 'Скоро вернёмся. Попробуй открыть приложение чуть позже'],
+  banned: ['Доступ ограничен', 'Если это ошибка, напиши в поддержку'],
+};
+
 function fatal(err) {
-  const expired = err instanceof ApiError && err.status === 401;
-  app.replaceChildren(ErrorState({
-    title: expired ? 'Сессия устарела' : 'Не получилось запуститься',
-    text: expired ? 'Закрой приложение и открой его заново из бота' : 'Проверь соединение и попробуй ещё раз',
-    onRetry: () => location.reload(),
-  }));
+  const code = err instanceof ApiError ? (err.status === 401 ? 'unauthorized' : err.code) : '';
+  const [title, text] = FATAL[code] || ['Не получилось запуститься', 'Проверь соединение и попробуй ещё раз'];
+  app.replaceChildren(ErrorState({ title, text, onRetry: () => location.reload() }));
+}
+
+// initData живёт сутки: если сессия истекла посреди работы, любой экран покажет понятное сообщение
+let expiredShown = false;
+window.addEventListener('ez:session-expired', () => {
+  if (expiredShown || !state.me) return; // до загрузки профиля это покажет fatal()
+  expiredShown = true;
+  closeAll();
+  fatal(new ApiError(401, { code: 'unauthorized' }));
+});
+
+// шрифт не блокирует первый показ: пока он грузится (или если Google недоступен) работает системный
+function loadFont() {
+  document.head.append(h('link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&display=swap' }));
 }
 
 async function boot() {
+  loadFont();
   initTelegram();
   mountDevFrame('EzzProd');
   app.replaceChildren(h('div', { class: 'boot', 'aria-label': 'загрузка' }, h('span', { class: 'spinner spinner--lg' })));

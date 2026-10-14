@@ -1,4 +1,4 @@
-"""Ревью-тесты HTTP-слоя и фронтенда (второй проход). xfail(strict=True) = дыра ещё не закрыта."""
+"""Ревью-тесты HTTP-слоя и фронтенда (второй проход). Дыры из ревью закрыты; тесты держат их закрытыми."""
 from __future__ import annotations
 
 import re
@@ -16,8 +16,6 @@ JS = sorted((WEBAPP / "js").rglob("*.js"))
 
 # ───────────────────────── размер тела ─────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="P1: лимит тела проверяется только по заголовку Content-Length; "
-                                       "chunked-запрос (без Content-Length) целиком уходит в разбор multipart")
 def test_chunked_upload_is_limited_before_parsing(client):
     boundary = "xBOUNDARYx"
 
@@ -82,27 +80,23 @@ def test_no_html_injection_sinks_in_frontend():
     assert offenders == []
 
 
-@pytest.mark.xfail(strict=True, reason="P1: в UI нет вызова DELETE /api/logos/{id}; квота 20 логотипов исчерпывается "
-                                       "навсегда (кнопка «убрать логотип» чистит только состояние в браузере)")
 def test_frontend_can_delete_uploaded_logos():
     api = (WEBAPP / "js" / "api.js").read_text(encoding="utf-8")
     assert "/logos/" in api and "DELETE" in api
 
 
 def test_customize_sheet_unsubscribes_on_close():
-    """Экран оформления (openOrder) снимает подписки на bus при любом закрытии — через onClose."""
+    """Экран «Оформление» при закрытии отписывается от всех событий bus и гасит анимации превью."""
     src = (WEBAPP / "js" / "views" / "customize.js").read_text(encoding="utf-8")
-    assert re.search(r"onClose\s*:", src) or re.search(r"onClose\s*[,}]", src)
+    assert "onClose: () => cleanup()" in src
+    assert re.search(r"return \(\) => \{ offs\.forEach\(\(off\) => off\(\)\); if \(parts\) parts\.destroy\(\); \}", src)
 
 
-@pytest.mark.xfail(strict=True, reason="P1: render-blocking CSS с fonts.googleapis.com; если он недоступен "
-                                       "(часть регионов, корпоративные сети), первый показ ждёт таймаут")
 def test_no_blocking_third_party_stylesheet():
     html = (WEBAPP / "index.html").read_text(encoding="utf-8")
     assert not re.search(r'<link[^>]+rel="stylesheet"[^>]+fonts\.googleapis\.com', html)
 
 
-@pytest.mark.xfail(strict=True, reason="P2: на HTML нет CSP; нет frame-ancestors/ограничений script-src")
 def test_html_has_content_security_policy(client):
     r = client.get("/")
     assert "content-security-policy" in {k.lower() for k in r.headers}

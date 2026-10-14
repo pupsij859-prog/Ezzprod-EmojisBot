@@ -1,14 +1,14 @@
-// «Мой профиль»: кто я, статистика на фоне Dark Veil (баланс, куплено, паки, друзья),
-// покупка генераций и «Полезное». Паки — на вкладке «Паки».
+// «Профиль»: кто я, статистика на фоне Dark Veil (баланс, куплено, паки, друзья),
+// быстрая покупка генераций и «Полезное». Паки — на вкладке «Паки».
 import { api } from '../api.js';
-import { Avatar, Button, SectionHead, Topbar, handle } from '../components.js';
+import { Avatar, BigEmoji, ProBadge, SectionHead, Topbar, handle } from '../components.js';
 import { goTab } from '../router.js';
 import { bus, priceFor, refreshMe, state } from '../store.js';
 import { haptic, openLink } from '../tg.js';
-import { displayName, emojiWord, h, icon, plural, rub, toast } from '../ui.js';
+import { displayName, emojiWord, h, icon, plural, toast } from '../ui.js';
 import { mountVeil } from '../veil.js';
 import { BannerCover } from './banner.js';
-import { openBuy, presetBadge, presets } from './buy.js';
+import { openBuy, packLook, presetBadge, presets } from './buy.js';
 import { openDocs, openFreeInfo } from './info.js';
 import { openInstruction } from './onboarding.js';
 import { openReferral } from './referral.js';
@@ -55,7 +55,7 @@ export function mountProfile(container) {
 
   // ── статистика
   const balanceValue = () => [h('span', { 'data-balance': '' }, String(me().balance)), icon('sparkle-fill', 'vcard__spark')];
-  const cBalance = StatCard({ title: 'Баланс', value: balanceValue(), foot: foot('1 эмодзи', '= 1 генерация'), onClick: () => openBuy() });
+  const cBalance = StatCard({ title: 'Баланс', value: balanceValue(), foot: foot('1', 'генерация = 1 эмодзи'), onClick: () => openBuy() });
   const cBought = StatCard({ title: 'Куплено', value: '0', onClick: openFreeInfo });
   const cPacks = StatCard({ title: 'Паки', value: '—', foot: 'загружаем…', onClick: () => goTab('packs') });
   const cFriends = StatCard({ title: 'Друзья', value: '—', foot: 'загружаем…', onClick: openReferral });
@@ -66,7 +66,7 @@ export function mountProfile(container) {
     plan.classList.toggle('is-pro', m.plan === 'pro');
     cBalance.set(balanceValue());
     const left = Math.max(0, m.pro_min - m.purchased_total);
-    cBought.set(String(m.purchased_total), m.plan === 'pro' ? foot('Pro', 'открыт: стили сохраняются') : foot(`ещё ${left}`, 'до Pro'));
+    cBought.set(String(m.purchased_total), m.plan === 'pro' ? foot('Pro', 'открыт') : foot(`ещё ${left}`, 'до Pro'));
   };
   paintMe();
   const off = bus.on('me', paintMe);
@@ -75,32 +75,37 @@ export function mountProfile(container) {
   const p = state.pricing;
   const quick = presets().filter((q) => q === 10 || q === p.discount_from || q === p.bulk_from).slice(0, 3);
   const buy = h('div', { class: 'vcard vcard--plain vbuy' },
-    h('span', { class: 'vcard__title' }, 'Купить генерации'),
-    h('b', { class: 'vbuy__lead' }, 'Не сгорают, ник и логотип включены'),
+    h('div', { class: 'vbuy__head' },
+      h('span', { class: 'vcard__title' }, 'Пополнить'),
+      h('button', { class: 'vbuy__all', type: 'button', onclick: () => { haptic.tap(); openBuy(); } }, 'Все пакеты', icon('chev-right'))),
     h('div', { class: 'vquick' }, quick.map((q) => {
       const badge = presetBadge(q);
-      return h('button', { class: 'vquick__item', type: 'button', onclick: () => { haptic.tap(); openBuy({ qty: q }); } },
-        badge ? h('span', { class: `bpack__badge bpack__badge--${badge.tone}` }, badge.text) : null,
-        h('b', null, String(q)),
-        rub(priceFor(q)));
-    })),
-    Button({ label: 'Все пакеты', variant: 'secondary', onClick: () => openBuy() }));
+      const look = packLook(q);
+      return h('button', { class: 'vqi', type: 'button', style: { '--glow': look.glow },
+        onclick: () => { haptic.tap(); openBuy({ qty: q }); } },
+      BigEmoji(look.emoji, 'vqi__emoji'),
+      badge ? h('span', { class: `vqi__badge vqi__badge--${badge.tone}` }, badge.text) : null,
+      h('b', { class: 'vqi__qty' }, String(q)),
+      h('span', { class: 'vqi__price' }, `${priceFor(q)}\u00a0₽`));
+    })));
 
   // ── полезное
+  // glow — цвет свечения за эмодзи (r, g, b), под цвет самого эмодзи
   const useful = [
-    { label: 'Пригласить', sub: `+${me().referral_reward} за друга`, icon: 'users', onClick: openReferral },
-    { label: 'Бонусы', sub: 'подарки и Pro', icon: 'gift', onClick: openFreeInfo },
-    { label: 'Инструкция', sub: 'как собрать пак', icon: 'help', onClick: () => openInstruction() },
-    { label: 'Поддержка', sub: 'ответим в чате', icon: 'chat', onClick: () => {
+    { label: 'Пригласить', sub: `+${me().referral_reward} за друга`, emoji: 'friends', glow: '255, 176, 72', onClick: openReferral },
+    { label: 'Бонусы', emoji: 'gift', glow: '255, 72, 104', onClick: openFreeInfo },
+    { label: 'Инструкция', emoji: 'question', glow: '255, 206, 64', onClick: () => openInstruction() },
+    { label: 'Поддержка', emoji: 'chat', glow: '255, 150, 70', onClick: () => {
       if (me().support_url) openLink(me().support_url);
       else toast('Поддержка скоро появится');
     } },
-    { label: 'Мои стили', sub: 'текст и цвета', icon: 'palette', onClick: () => openStyles() },
-    { label: 'Документы', sub: 'условия и данные', icon: 'doc', onClick: openDocs },
+    { label: 'Мои стили', pro: me().plan !== 'pro', emoji: 'sparkle', glow: '255, 214, 92', onClick: () => openStyles() },
+    { label: 'Документы', emoji: 'docs', glow: '140, 176, 255', onClick: openDocs },
   ];
-  const tiles = useful.map((u) => h('button', { class: 'vcard vcard--plain vtile', type: 'button', onclick: () => { haptic.tap(); u.onClick(); } },
-    h('span', { class: 'vtile__icon' }, icon(u.icon)),
-    h('span', { class: 'vtile__text' }, h('b', null, u.label), h('span', null, u.sub))));
+  const tiles = useful.map((u, i) => h('button', { class: 'vcard vcard--plain vtile', type: 'button',
+    style: { '--glow': u.glow, '--glow-delay': `${-i * 0.7}s` }, onclick: () => { haptic.tap(); u.onClick(); } },
+    BigEmoji(u.emoji, 'vtile__emoji'),
+    h('span', { class: 'vtile__text' }, h('b', null, u.label), u.sub ? h('span', null, u.sub) : null, u.pro ? ProBadge('vtile__pro') : null)));
 
   container.append(h('section', { class: 'screen screen--profile' },
     Topbar(),

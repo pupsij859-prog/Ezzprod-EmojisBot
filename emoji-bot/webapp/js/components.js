@@ -1,5 +1,6 @@
 // Общие компоненты интерфейса.
 import { TgEmoji } from './emoji.js';
+import { goTab } from './router.js';
 import { haptic, tgUser } from './tg.js';
 import { bus, state } from './store.js';
 import { displayName, h, icon, initials } from './ui.js';
@@ -19,24 +20,47 @@ export function Avatar({ size = 'md' } = {}) {
 // ── чип баланса «✦ N»; число обновляется само при событии 'me'
 export function BalanceChip(onClick) {
   const value = h('span', { class: 'chip__value', 'data-balance': '' }, String(state.me ? state.me.balance : 0));
-  return h('button', {
-    class: 'chip chip--balance', type: 'button', onclick: onClick,
-    'aria-label': 'баланс генераций, нажми, чтобы купить',
-  }, icon('sparkle-fill', 'chip__icon'), value);
+  return pressable(h('button', {
+    class: 'chip chip--balance pill', type: 'button', onclick: onClick,
+    'aria-label': 'баланс генераций, пополнить',
+  }, h('span', { class: 'chip__gem', 'aria-hidden': 'true' }, icon('sparkle-fill', 'chip__icon')), value));
 }
+
+/**
+ * Капсула шапки «нажимается»: сжимается под пальцем, кайма вспыхивает, отпускается пружиной.
+ * :active на iOS срабатывает ненадёжно, поэтому состояние ставим сами по pointer-событиям.
+ */
+export function pressable(el) {
+  const up = () => el.classList.remove('is-pressed');
+  el.addEventListener('pointerdown', () => el.classList.add('is-pressed'));
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach((t) => el.addEventListener(t, up));
+  return el;
+}
+
 bus.on('me', (me) => {
-  document.querySelectorAll('[data-balance]').forEach((n) => { n.textContent = String(me.balance); });
+  document.querySelectorAll('[data-balance]').forEach((n) => {
+    const changed = n.textContent !== String(me.balance);
+    n.textContent = String(me.balance);
+    // баланс изменился — капсула коротко «подпрыгивает»
+    const chip = changed && n.closest('.chip--balance');
+    if (chip) { chip.classList.remove('is-bump'); void chip.offsetWidth; chip.classList.add('is-bump'); }
+  });
 });
 
 /** «@username» или имя, если юзернейма нет. */
 export const handle = (me) => (me && me.username ? `@${me.username}` : displayName(me));
 
-// ── шапка вкладки: аватар и @username слева, баланс справа
-export function Topbar(onBalance) {
+const toProfile = () => { haptic.tap(); goTab('profile'); };
+// экран покупки подгружаем при нажатии: buy.js сам импортирует компоненты отсюда
+const toBuy = () => { haptic.tap(); import('./views/buy.js').then((m) => m.openBuy()); };
+
+// ── шапка вкладки: аватар и @username слева (тап — профиль), баланс справа (тап — пополнение генераций)
+export function Topbar(onBalance = toBuy) {
   return h('header', { class: 'topbar' },
-    h('span', { class: 'topbar__who' }, Avatar({ size: 'hd' }), h('span', { class: 'topbar__handle' }, handle(state.me))),
+    pressable(h('button', { class: 'topbar__who pill', type: 'button', 'aria-label': 'открыть профиль', onclick: toProfile },
+      Avatar({ size: 'hd' }), h('span', { class: 'topbar__handle' }, handle(state.me)))),
     h('span', { class: 'topbar__spacer' }),
-    onBalance ? BalanceChip(onBalance) : null);
+    BalanceChip(onBalance));
 }
 
 /**
@@ -150,10 +174,14 @@ export function Row({ label, sub, value, chevron = true, pro = false, iconName, 
       h('span', { class: 'row__label' }, label),
       sub ? h('span', { class: 'row__sub' }, sub) : null),
     value != null ? (value instanceof Node ? value : h('span', { class: 'row__value' }, value)) : null,
-    pro ? h('span', { class: 'badge badge--pro' }, 'pro') : null,
+    pro ? ProBadge() : null,
     onClick && chevron ? icon('chev-right', 'row__chev') : null);
   return row;
 }
+
+/** Метка Pro: переливающийся «голографический» жетон с короной. */
+export const ProBadge = (cls = '') => h('span', { class: `badge badge--pro ${cls}`.trim(), 'aria-label': 'доступно в Pro' },
+  icon('crown', 'badge__icon'), h('span', null, 'Pro'));
 
 export const Group = (...rows) => h('div', { class: 'group' }, ...rows);
 

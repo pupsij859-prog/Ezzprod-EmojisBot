@@ -1,10 +1,12 @@
-// Главная: шапка, приветственный баннер, «Шаблоны» с выбором категории и сетка шаблонов
-// с бесконечной прокруткой. Тап по карточке добавляет шаблон в заказ.
-import { api, previewUrl } from '../api.js';
+// Главная: шапка, приветственный баннер, «Шаблоны» с выбором категории и сетка анимированных шаблонов
+// с бесконечной прокруткой. Тап по карточке добавляет шаблон в заказ. Ник, логотип и цвет надписи
+// пользователя сразу видны на всех шаблонах (js/tgs.js), проигрываются только карточки на экране.
+import { api } from '../api.js';
 import { ErrorState, SectionHead, Skeleton, Topbar } from '../components.js';
 import { bus, isSelected, limitFor, savePrefs, state, toggleSelection } from '../store.js';
 import { haptic } from '../tg.js';
 import { mountCrtWarp } from '../crt.js';
+import { currentLook, isPersonalized, TgsPreview, watchVisibility } from '../tgs.js';
 import { cap, h, icon, toast } from '../ui.js';
 import { openCategories } from './categories.js';
 
@@ -19,10 +21,8 @@ function Hero(me) {
   return { el, start: () => mountCrtWarp(fx) };
 }
 
-function Card(item, index) {
+function Card(item, index, player) {
   const selected = isSelected(item.id);
-  const img = h('img', { src: previewUrl(item.id), alt: '', loading: index < 12 ? 'eager' : 'lazy', decoding: 'async', draggable: false });
-  img.addEventListener('error', () => img.classList.add('is-broken'));
   return h('button', {
     class: `tcard${selected ? ' is-selected' : ''}`, type: 'button', role: 'listitem',
     'aria-pressed': String(selected), 'aria-label': item.name,
@@ -36,9 +36,7 @@ function Card(item, index) {
         haptic.select();
       }
     },
-  }, img,
-  // свой текст пользователя показываем поверх карточки: так превью не зависит от ввода и хорошо кэшируется
-  h('span', { class: 'tcard__text', 'aria-hidden': 'true' }, state.text),
+  }, player.el,
   h('span', { class: 'tcard__check' }, icon('check')));
 }
 
@@ -65,6 +63,18 @@ export function mountHome(container) {
     });
   } }, pillLabel, icon('chev-right', 'catpill__chev'));
 
+  const seen = watchVisibility(container);
+  let players = [];
+  let look = null;
+  let lookVersion = 0;
+  const refreshLook = async () => {
+    const mine = ++lookVersion;
+    const next = isPersonalized() ? await currentLook({ own: true }) : null;
+    if (mine !== lookVersion || !alive) return;
+    look = next;
+    players.forEach((p) => p.update(look));
+  };
+
   const hero = Hero(state.me);
   container.append(h('section', { class: 'screen screen--home' },
     Topbar(),
@@ -82,7 +92,13 @@ export function mountHome(container) {
       const data = await api.templates(state.category, page + 1);
       if (mine !== requestId || !alive) return;
       grid.querySelectorAll('.tcard--skeleton').forEach((n) => n.remove());
-      grid.append(...data.items.map(Card));
+      const cards = data.items.map((item, i) => {
+        const player = TgsPreview(item.id, { look, lazy: true, cls: 'tgs--card' });
+        players.push(player);
+        seen.add(player);
+        return Card(item, i, player);
+      });
+      grid.append(...cards);
       page = data.page;
       pages = data.pages;
     } catch {
@@ -106,6 +122,8 @@ export function mountHome(container) {
     page = 0;
     pages = 1;
     pillLabel.textContent = cap(categoryName());
+    players.forEach((p) => p.destroy());
+    players = [];
     grid.replaceChildren(...skeletons(12));
     loadMore();
   }
@@ -123,11 +141,20 @@ export function mountHome(container) {
       el.setAttribute('aria-pressed', String(on));
     });
   });
-  const offText = bus.on('personalization', () => {
-    grid.querySelectorAll('.tcard__text').forEach((el) => { el.textContent = state.text; });
-  });
+  let timer = 0;
+  const offText = bus.on('personalization', () => { clearTimeout(timer); timer = setTimeout(refreshLook, 250); });
 
   reset();
+  refreshLook();
   const stopFx = hero.start();
-  return () => { alive = false; stopFx(); observer.disconnect(); offSelection(); offText(); };
+  return () => {
+    alive = false;
+    clearTimeout(timer);
+    stopFx();
+    observer.disconnect();
+    seen.disconnect();
+    players.forEach((p) => p.destroy());
+    offSelection();
+    offText();
+  };
 }

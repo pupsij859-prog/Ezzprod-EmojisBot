@@ -1,10 +1,11 @@
 """Обработчики бота: /start (+реферал), /help, оплата Stars, служебные команды платежей."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
-from aiogram import F, Router
+from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     FSInputFile,
@@ -15,7 +16,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-from .. import admin, services
+from .. import admin, runtime, services
 from ..context import Context
 from . import banner, texts
 
@@ -24,7 +25,27 @@ log = logging.getLogger("ezzprod.bot")
 router = Router(name="main")
 router.message.filter(F.chat.type == "private")
 
-REF_PARAM = re.compile(r"^ref_([0-9a-f]{8})$")
+
+class AccessMiddleware(BaseMiddleware):
+    """Бан и техработы (включаются в /admin). Оплату пропускаем всегда: деньги уже списаны — зачислить обязаны."""
+
+    async def __call__(self, handler, event: Message, data: dict):
+        ctx: Context = data["ctx"]
+        user = event.from_user
+        if user is None or event.successful_payment is not None or runtime.is_admin(ctx, user.id):
+            return await handler(event, data)
+        row = await services.get_user(ctx.db, user.id)
+        if row is not None and row["banned"]:
+            return None  # забаненным молчим
+        if ctx.maintenance:
+            await event.answer(texts.MAINTENANCE)
+            return None
+        return await handler(event, data)
+
+
+router.message.middleware(AccessMiddleware())
+
+REF_PARAM = re.compile(r"^ref_([0-9a-f]{8})\Z")
 
 
 def tg_user(message: Message) -> dict:
@@ -33,7 +54,7 @@ def tg_user(message: Message) -> dict:
 
 
 def open_keyboard(ctx: Context) -> InlineKeyboardMarkup | None:
-    url = ctx.settings.webapp_url
+    url = ctx.webapp_url
     if not url.startswith("https://"):
         return None  # Telegram принимает web_app-кнопки только с https
     return InlineKeyboardMarkup(
@@ -48,14 +69,16 @@ async def on_start(message: Message, command: CommandObject, ctx: Context) -> No
         m = REF_PARAM.match(command.args.strip())
         if m:
             ref_code = m.group(1)
-    await services.upsert_user(ctx.db, ctx.settings, tg_user(message), ref_code)
+    row, _ = await services.upsert_user(ctx.db, ctx.settings, tg_user(message), ref_code)
+    if row["blocked"]:
+        await runtime.set_blocked(ctx.db, row["id"], False)  # снова пишет боту — рассылки ему доходят
 
     keyboard = open_keyboard(ctx)
     if keyboard is None:
         await message.answer(texts.start_no_webapp(ctx.settings.brand_name))
         return
 
-    path = banner.get_banner(ctx.settings)
+    path = await asyncio.to_thread(banner.get_banner, ctx.settings)  # Pillow не должен блокировать бота
     if path is None:
         await message.answer(texts.help_text(ctx.settings.brand_name), reply_markup=keyboard)
         return
@@ -73,7 +96,7 @@ async def on_help(message: Message, ctx: Context) -> None:
 # ── обязательные для платёжных ботов команды
 @router.message(Command("terms"))
 async def on_terms(message: Message, ctx: Context) -> None:
-    url = ctx.settings.webapp_url
+    url = ctx.webapp_url
     await message.answer(texts.terms(f"{url}/docs/terms.html" if url.startswith("https://") else None))
 
 
@@ -87,10 +110,25 @@ async def on_paysupport(message: Message, ctx: Context) -> None:
     await message.answer(texts.paysupport(ctx.settings.support_username or None))
 
 
+@router.message(Command("promo"))
+async def on_promo(message: Message, command: CommandObject, ctx: Context) -> None:
+    code = (command.args or "").strip()
+    if not code:
+        await message.answer(texts.PROMO_USAGE)
+        return
+    await services.upsert_user(ctx.db, ctx.settings, tg_user(message))
+    try:
+        gens, balance = await runtime.redeem_promo(ctx.db, message.from_user.id, code)
+    except runtime.PromoError as exc:
+        await message.answer(texts.PROMO_ERRORS.get(exc.reason, texts.PROMO_ERRORS["unknown"]))
+        return
+    await message.answer(texts.promo_ok(gens, balance), reply_markup=open_keyboard(ctx))
+
+
 @router.message(Command("refund"))
 async def on_refund(message: Message, command: CommandObject, ctx: Context) -> None:
-    """Возврат Stars. Только для ADMIN_IDS; остальным бот не отвечает."""
-    if message.from_user.id not in ctx.settings.admin_ids:
+    """Возврат Stars. Только для админов; остальным бот не отвечает."""
+    if not runtime.is_admin(ctx, message.from_user.id):
         return
     charge_id = (command.args or "").strip()
     if not charge_id:
@@ -101,11 +139,13 @@ async def on_refund(message: Message, command: CommandObject, ctx: Context) -> N
     except services.RefundError as exc:
         await message.answer(texts.REFUND_ERRORS.get(str(exc), "не получилось начать возврат"))
         return
-    if ok:
+    if ok is True:
         await message.answer(texts.REFUND_DONE)
         await admin.notify_refunded(ctx, user_id, qty)
-    else:
+    elif ok is False:
         await message.answer(texts.REFUND_FAILED)
+    else:
+        await message.answer(texts.REFUND_UNKNOWN)
 
 
 # ── оплата Stars
@@ -147,6 +187,8 @@ async def on_paid(message: Message, ctx: Context) -> None:
         await message.answer(texts.PAYMENT_PROBLEM)
         return
     await ctx.notifier.payment_ok(result.user_id, result.qty, result.balance)
+    if result.reward_user_id:
+        await ctx.notifier.referral_reward(result.reward_user_id, result.reward_amount)
 
 
 @router.message()

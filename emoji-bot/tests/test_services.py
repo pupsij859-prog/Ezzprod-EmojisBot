@@ -73,30 +73,54 @@ async def test_create_pack_is_idempotent_by_key(db, settings):
         await services.create_pack(db, settings, 1, pack_req(settings), 0, "short")
 
 
-async def test_finish_pack_rewards_referrer_once(db, settings):
+async def test_referral_reward_needs_pack_and_purchase_and_is_paid_once(db, settings):
     a, _ = await make_user(db, settings, 1)
     await make_user(db, settings, 2, a["ref_code"])
     p1 = await new_pack(db, settings, 2)
     done = await services.finish_pack(db, settings, p1["id"], "https://t.me/x")
-    assert done.reward_user_id == 1 and done.reward_amount == 3
-    assert (await services.get_user(db, 1))["balance"] == 1 + 3
+    assert done.reward_user_id is None                      # пак на подарочной генерации — награды нет
     assert (await services.get_user(db, 2))["trial_exports_left"] == 0
     assert await services.finish_pack(db, settings, p1["id"], "https://t.me/x") is None  # повтор — no-op
+
+    _, res = await pay(db, settings, 2, 10, 60, "c-friend")  # первая покупка друга открывает награду
+    assert (res.reward_user_id, res.reward_amount) == (1, 3)
+    assert (await services.get_user(db, 1))["balance"] == 1 + 3
+    _, again = await pay(db, settings, 2, 10, 60, "c-friend-2")
+    assert again.reward_user_id is None                      # только один раз
     stats = await services.referral_stats(db, settings, 1)
     assert stats == {"invited": 1, "created_pack": 1, "earned": 3, "reward": 3}
 
 
-async def test_referral_caps(db, tmp_path):
+async def test_referral_reward_when_purchase_comes_first(db, settings):
+    a, _ = await make_user(db, settings, 1)
+    await make_user(db, settings, 2, a["ref_code"])
+    _, res = await pay(db, settings, 2, 10, 60, "c1")
+    assert res.reward_user_id is None                        # пака ещё нет
+    p = await new_pack(db, settings, 2)
+    done = await services.finish_pack(db, settings, p["id"], "x")
+    assert (done.reward_user_id, done.reward_amount) == (1, 3)
+
+
+async def _paying_friend(db, settings, uid, ref_code):
+    await make_user(db, settings, uid, ref_code)
+    pack = await new_pack(db, settings, uid)
+    await services.finish_pack(db, settings, pack["id"], "x")
+    _, res = await pay(db, settings, uid, 1, 6, f"c{uid}")
+    return res
+
+
+async def test_referral_caps_and_pending(db, tmp_path):
     settings = make_settings(tmp_path, referral_daily_cap=2, referral_lifetime_cap=100)
     boss, _ = await make_user(db, settings, 1)
     rewarded = 0
     for uid in range(10, 15):
-        await make_user(db, settings, uid, boss["ref_code"])
-        pack = await new_pack(db, settings, uid)
-        res = await services.finish_pack(db, settings, pack["id"], "x")
+        res = await _paying_friend(db, settings, uid, boss["ref_code"])
         rewarded += 1 if res.reward_user_id else 0
     assert rewarded == 2  # суточный лимит
     assert (await services.referral_stats(db, settings, 1))["created_pack"] == 5
+    # упёрлись в лимит — награда не сгорела: остаётся в ожидании (referral_rewarded=0)
+    pending = await db.fetchone("SELECT COUNT(*) AS n FROM users WHERE referred_by=1 AND referral_rewarded=0")
+    assert pending["n"] == 3
 
     life = make_settings(tmp_path / "life", referral_daily_cap=100, referral_lifetime_cap=3)
     from app.db import Database
@@ -107,9 +131,7 @@ async def test_referral_caps(db, tmp_path):
         boss2, _ = await make_user(db2, life, 1)
         got = 0
         for uid in range(20, 26):
-            await make_user(db2, life, uid, boss2["ref_code"])
-            pack = await new_pack(db2, life, uid)
-            res = await services.finish_pack(db2, life, pack["id"], "x")
+            res = await _paying_friend(db2, life, uid, boss2["ref_code"])
             got += 1 if res.reward_user_id else 0
         assert got == 3  # пожизненный лимит
     finally:
@@ -173,7 +195,7 @@ async def test_pro_unlocks_by_total_purchased(db, tmp_path):
         await services.add_style(db, settings, 1, "мой", {"text": "ez"})
     await pay(db, settings, 1, 10, 60, "c2")
     assert (await services.get_user(db, 1))["plan"] == "pro"
-    style = await services.add_style(db, settings, 1, "мой", {"text": "ez", "fill": "#112233", "stroke": "#aabbcc"})
+    style = await services.add_style(db, settings, 1, "мой", {"text": "ez", "color": "#112233"})
     assert (await services.list_styles(db, 1))[0]["id"] == style["id"]
     assert await services.delete_style(db, 1, style["id"]) and not await services.delete_style(db, 1, style["id"])
 
@@ -231,7 +253,7 @@ async def test_validation_rules(settings):
     with pytest.raises(services.ValidationFailed):
         v(settings, {"type": "emoji", "template_ids": ["nope-1"]})
     with pytest.raises(services.ValidationFailed):
-        v(settings, {"type": "emoji", "template_ids": ["classic-001"], "fill": "red"})
+        v(settings, {"type": "emoji", "template_ids": ["classic-001"], "color": "red"})
     with pytest.raises(services.ValidationFailed):
         v(settings, {"type": "sticker", "template_ids": [f"classic-{i:03d}" for i in range(1, 122)]})  # > 120
     ok = v(settings, {"type": "emoji", "template_ids": ["classic-001", "classic-001"], "text": "  a‮b￾\n "})

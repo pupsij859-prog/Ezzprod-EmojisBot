@@ -1,4 +1,5 @@
-// Оплата генераций. Цены в рублях; сейчас работает способ «Звёзды» (WebApp.openInvoice, сумма пересчитана в Stars). Статус 'paid' от Telegram приходит раньше,
+// Оплата генераций. Цены в рублях; сейчас работает способ «Звёзды» (WebApp.openInvoice, сумма пересчитана в Stars).
+// Статус 'paid' от Telegram приходит раньше,
 // чем бот обработает платёж, поэтому после него опрашиваем сервер: баланс показываем только по его ответу.
 import { api, ApiError } from './api.js';
 import { refreshMe, state } from './store.js';
@@ -28,14 +29,16 @@ export async function payFor(qty, method = 'stars') {
     if (inTelegram) {
       const { url, payment_id: paymentId } = await api.invoice(qty, method);
       const status = await openInvoice(url);
-      if (status === 'paid') {
-        toast('Зачисляем генерации…');
+      if (status === 'paid' || status === 'pending') {
+        // 'pending' — Telegram ещё подтверждает оплату: ждём так же, как после 'paid'
+        toast(status === 'paid' ? 'Зачисляем генерации…' : 'Платёж подтверждается…');
         if (await waitUntilCredited(paymentId)) return 'paid';
         toast('Платёж обрабатывается: баланс обновится сам, мы напишем в чат', 'info');
         return 'pending';
       }
       if (status === 'cancelled') return 'cancelled';
-      return status === 'pending' ? 'pending' : 'failed';
+      if (status === 'failed') toast('Оплата не прошла, попробуй ещё раз', 'warn');
+      return 'failed';
     }
     // вне Telegram оплата возможна только в режиме разработки (маршрут существует лишь при DEV_MODE=1)
     try {

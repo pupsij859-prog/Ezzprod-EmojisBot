@@ -10,7 +10,7 @@ import threading
 def main() -> None:
     host = sys.argv[1].encode("idna")
     port = int(sys.argv[2])
-    proxy = socket.create_connection(("127.0.0.1", 10808), timeout=10)
+    proxy = socket.create_connection(("127.0.0.1", int(os.environ.get("TUNNEL_SOCKS", "10808"))), timeout=10)
     proxy.sendall(b"\x05\x01\x00")
     if proxy.recv(2) != b"\x05\x00":
         raise RuntimeError("SOCKS5 proxy refused no-auth connection")

@@ -106,7 +106,55 @@ CREATE INDEX IF NOT EXISTS idx_logos_user ON logos (user_id);
 """
 
 # версия → SQL, который переводит схему с предыдущей версии на эту
-MIGRATIONS: dict[int, str] = {}
+MIGRATIONS: dict[int, str] = {
+    # v2: настоящая сборка паков — имя набора в Telegram, прогресс по элементам, частичные сбои
+    2: """
+ALTER TABLE packs ADD COLUMN set_name TEXT;
+ALTER TABLE packs ADD COLUMN done INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE packs ADD COLUMN failed_items INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE packs ADD COLUMN error TEXT;
+CREATE TABLE IF NOT EXISTS pack_items (
+    pack_id     INTEGER NOT NULL REFERENCES packs(id),
+    idx         INTEGER NOT NULL,
+    template_id TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',   -- pending | added | failed
+    error       TEXT,
+    PRIMARY KEY (pack_id, idx)
+);
+""",
+    # v3: админка в чате — настройки на лету, бан, промокоды, админы без перезапуска
+    3: """
+CREATE TABLE IF NOT EXISTS kv (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+);
+ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;   -- заблокировал бота (для рассылок)
+CREATE TABLE IF NOT EXISTS promos (
+    code        TEXT PRIMARY KEY,
+    gens        INTEGER NOT NULL,
+    uses_max    INTEGER NOT NULL,
+    uses        INTEGER NOT NULL DEFAULT 0,
+    created_by  INTEGER,
+    created_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS promo_uses (
+    code        TEXT NOT NULL,
+    user_id     INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (code, user_id)
+);
+CREATE TABLE IF NOT EXISTS admins (
+    user_id     INTEGER PRIMARY KEY,
+    added_by    INTEGER,
+    created_at  INTEGER NOT NULL
+);
+""",
+    # v4: свои ник/логотип/цвета у отдельного элемента пака (поверх общих настроек пака)
+    4: """
+ALTER TABLE pack_items ADD COLUMN params TEXT;
+""",
+}
 
 
 class Tx:
@@ -193,3 +241,8 @@ class Database:
     async def fetchall(self, sql: str, params: Iterable[Any] = ()) -> list[aiosqlite.Row]:
         async with self._lock:
             return await Tx(self.conn).fetchall(sql, params)
+
+    async def backup_to(self, path: Path | str) -> None:
+        """Целостная копия базы в файл (VACUUM INTO): не мешает работе, WAL учитывается."""
+        async with self._lock:
+            await self.conn.execute("VACUUM INTO ?", (str(path),))

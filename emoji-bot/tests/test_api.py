@@ -75,25 +75,35 @@ def test_onboarding_flag_is_server_side(client):
     assert client.get("/api/me", headers=dev(6)).json()["onboarded"] is False  # у других — нет
 
 
-def test_catalog_matches_reference_counts(client):
+def test_catalog_is_read_from_template_files(client):
     cats = client.get("/api/categories").json()
     assert {c["name"]: c["count"] for c in cats["categories"]} == {
-        "классика": 144, "персонажи": 58, "подарки": 34, "любовь": 27, "финансы": 17, "разное": 39}
-    assert cats["total"] == 319
-    p1 = client.get("/api/templates?category=misc&page=1").json()
-    p2 = client.get("/api/templates?category=misc&page=2").json()
+        "классика": 144, "персонажи": 58, "подарки": 34, "любовь": 27, "финансы": 17, "особые": 16, "флаги": 8, "разное": 39}
+    assert cats["total"] == 343
+    assert cats["categories"][0]["cover"] == "classic-001"
+    p1 = client.get("/api/templates?category=other&page=1").json()
+    p2 = client.get("/api/templates?category=other&page=2").json()
     assert (p1["pages"], len(p1["items"]), len(p2["items"])) == (2, 30, 9)
     assert not {i["id"] for i in p1["items"]} & {i["id"] for i in p2["items"]}
     assert client.get("/api/templates?category=nope").status_code == 404
 
 
-def test_preview_svg_ignores_user_input(client):
-    r = client.get("/api/templates/classic-001/preview.svg", params={"text": '<script>alert(1)</script>', "fill": "red"})
-    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
-    assert "script" not in r.text and "alert" not in r.text           # пользовательский ввод в SVG не попадает
-    assert r.text == client.get("/api/templates/classic-001/preview.svg").text   # один шаблон = один и тот же ответ
-    assert "default-src 'none'" in r.headers["content-security-policy"]
-    assert client.get("/api/templates/nope/preview.svg").status_code == 404
+def test_template_file_is_served_as_gzipped_lottie(client):
+    r = client.get("/api/templates/classic-001.tgs")
+    assert r.status_code == 200 and r.headers["content-encoding"] == "gzip"
+    anim = r.json()   # клиент распаковал gzip сам
+    assert (anim["w"], anim["h"]) == (512, 512) and "max-age" in r.headers["cache-control"]
+    assert client.get("/api/templates/classic-001.tgs", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
+    assert client.get("/api/templates/nope-001.tgs").status_code == 404
+    assert client.get("/api/templates/..%2Fapp.tgs").status_code == 404
+
+
+def test_static_thumbnail_exists_for_every_template(client):
+    from app import catalog
+
+    for cat in catalog.all_categories():
+        for n in (1, cat.count):
+            assert client.get(f"/assets/thumbs/{cat.id}-{n:03d}.webp").status_code == 200
 
 
 def test_pack_flow_and_referral(client):
@@ -106,7 +116,7 @@ def test_pack_flow_and_referral(client):
     friend = dev(200)
     assert client.get("/api/me", headers=friend).json()["balance"] == 1
 
-    body = {"type": "emoji", "template_ids": ["classic-001"], "text": "ez", "fill": "#131822", "stroke": "#a8c7ef"}
+    body = {"type": "emoji", "template_ids": ["classic-001"], "text": "ez", "color": "#131822"}
     r = client.post("/api/packs", json=body, headers=friend)
     assert r.status_code == 201 and r.json()["status"] == "processing"
     assert client.get("/api/me", headers=friend).json()["balance"] == 0
@@ -115,6 +125,12 @@ def test_pack_flow_and_referral(client):
     assert client.get("/api/me", headers=friend).json()["trial_exports_left"] == 0
     assert [p["id"] for p in client.get("/api/packs", headers=friend).json()["packs"]] == [pack["id"]]
     assert client.get(f"/api/packs/{pack['id']}", headers=inviter).status_code == 404  # чужой пак не виден
+    # пак на подарочной генерации награды не даёт: нужен ещё и покупатель
+    assert client.get("/api/me", headers=inviter).json()["balance"] == 1
+    ref = client.get("/api/referral", headers=inviter).json()
+    assert (ref["invited"], ref["created_pack"], ref["earned"]) == (1, 1, 0)
+    # друг купил генерации (dev-эмуляция) — пригласившему +3
+    assert client.post("/api/dev/pay", json={"qty": 1}, headers=friend).status_code == 200
     assert client.get("/api/me", headers=inviter).json()["balance"] == 4  # 1 подарок + 3 за друга
     ref = client.get("/api/referral", headers=inviter).json()
     assert (ref["invited"], ref["created_pack"], ref["earned"], ref["reward"]) == (1, 1, 3, 3)
@@ -246,3 +262,24 @@ def test_rate_limit(client):
     h = dev(700)
     codes = [client.post("/api/billing/invoice", json={"qty": 1}, headers=h).status_code for _ in range(12)]
     assert 429 in codes
+
+
+def test_glyphs_return_vector_nick(client):
+    h = dev(800)
+    r = client.post("/api/glyphs", json={"text": "  Кирилл  "}, headers=h)
+    assert r.status_code == 200 and r.json()["text"] == "Кирилл"
+    drawing = r.json()["drawing"]
+    assert drawing["layers"][0]["color"] is None and len(drawing["layers"][0]["paths"]) >= 6
+    assert client.post("/api/glyphs", json={"text": ""}, headers=h).json()["drawing"] is None
+    assert client.post("/api/glyphs", json={"text": "x"}).status_code == 401   # только авторизованным
+
+
+def test_logo_upload_returns_vector_and_owner_can_reload_it(client):
+    h = dev(810)
+    up = client.post("/api/logos", files={"file": ("l.png", png_bytes(), "image/png")}, headers=h).json()
+    vec = up["vector"]
+    assert vec["layers"] and vec["layers"][0]["color"] == [51, 102, 153]
+    assert client.get(f"/api/logos/{up['id']}/vector", headers=h).json()["vector"] == vec
+    assert client.get(f"/api/logos/{up['id']}/vector", headers=dev(811)).status_code == 404   # чужой
+    assert client.delete(f"/api/logos/{up['id']}", headers=h).status_code == 200
+    assert client.get(f"/api/logos/{up['id']}/vector", headers=h).status_code == 404

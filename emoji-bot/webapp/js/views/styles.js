@@ -34,7 +34,7 @@ export function openStyles(onApply) {
             h('div', { class: 'locked' },
               BigEmoji('lock', 'locked__icon'),
               h('p', { class: 'locked__title' }, 'Стили доступны в Pro'),
-              Quote({ emoji: 'lock', title: 'Стили', text: 'сохраняй текст и цвета под своим названием и применяй к любому паку одним тапом.' }),
+              Quote({ emoji: 'lock', title: 'Стили', text: 'сохраняй ник, заливку и обводку под своим названием и применяй к любому паку одним тапом.' }),
               h('div', { class: 'meter', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': proMin, 'aria-valuenow': purchased },
                 h('i', { style: { width: `${Math.min(100, Math.round((purchased / proMin) * 100))}%` } })),
               h('p', { class: 'locked__text' }, `Pro открывается после покупки ${proMin} генераций: осталось ${left}`)),
@@ -48,7 +48,7 @@ export function openStyles(onApply) {
           if (!value) { name.focus(); return; }
           setBusy(save, true);
           try {
-            await api.addStyle({ name: value, text: state.text, fill: state.fill, stroke: state.stroke });
+            await api.addStyle({ name: value, text: state.text, color: state.color, stroke: state.stroke });
             haptic.success();
             name.value = '';
             toast('Стиль сохранён');
@@ -66,14 +66,15 @@ export function openStyles(onApply) {
         }
         body.append(h('ul', { class: 'styles__list' }, styles.map((s) => h('li', { class: 'style' },
           h('button', { class: 'style__apply', type: 'button', onclick: () => {
-            setPersonalization({ text: s.params.text || '', fill: s.params.fill, stroke: s.params.stroke });
+            setPersonalization({ text: s.params.text || '', color: s.params.color || null, stroke: s.params.stroke || null });
             haptic.success();
             toast(`Стиль «${s.name}» применён`);
             close();
             if (onApply) onApply();
           } },
           h('span', { class: 'style__dots' },
-            h('i', { style: { background: s.params.fill } }), h('i', { style: { background: s.params.stroke } })),
+            h('i', { class: s.params.color ? '' : 'is-own', style: s.params.color ? { background: s.params.color } : {} }),
+            s.params.stroke ? h('i', { style: { background: s.params.stroke } }) : null),
           h('span', { class: 'style__name' }, s.name),
           h('span', { class: 'style__text' }, s.params.text || '')),
           h('button', { class: 'style__del', type: 'button', 'aria-label': `удалить стиль ${s.name}`, onclick: async () => {

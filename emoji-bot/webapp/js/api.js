@@ -37,6 +37,8 @@ async function request(method, path, body, { form = false, headers: extra = {} }
     serverGone();
     throw new ApiError(0, { code: 'network' });
   }
+  // подпись Telegram истекла (initData живёт сутки) — сообщаем приложению, где бы это ни случилось
+  if (res.status === 401) window.dispatchEvent(new CustomEvent('ez:session-expired'));
   let data = null;
   try { data = await res.json(); } catch {}
   if (!res.ok && data === null && res.status >= 502) serverGone();
@@ -58,6 +60,14 @@ export const api = {
     form.append('file', file);
     return request('POST', '/logos', form, { form: true });
   },
+  // освобождает место в квоте логотипов на сервере
+  deleteLogo: (id) => request('DELETE', `/logos/${encodeURIComponent(id)}`),
+  // векторный логотип для живого превью (после перезапуска приложения)
+  logoVector: (id) => request('GET', `/logos/${encodeURIComponent(id)}/vector`),
+  // ник как контуры букв — для живого превью шаблонов
+  glyphs: (text) => request('POST', '/glyphs', { text }),
+  // продвинутый редактор (Pro): готовая анимация с правками, части эмодзи, цвета и проверка под Telegram
+  render: (body) => request('POST', '/render', body),
   // idempotencyKey: повтор запроса с тем же ключом не спишет генерации второй раз
   createPack: (body, idempotencyKey) =>
     request('POST', '/packs', body, { headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {} }),
@@ -82,9 +92,9 @@ export const api = {
   },
 };
 
-/** Превью шаблона: зависит только от шаблона (текст пользователя рисует клиент поверх карточки). */
-const PREVIEW_VERSION = '3'; // меняй при обновлении рисунков, чтобы сбросить кэш браузера
-export const previewUrl = (templateId) => `/api/templates/${encodeURIComponent(templateId)}/preview.svg?v=${PREVIEW_VERSION}`;
+/** Статичная картинка шаблона (assets/thumbs, кадр анимации). Анимацию с ником показывает js/tgs.js. */
+const PREVIEW_VERSION = '1'; // меняй при обновлении картинок, чтобы сбросить кэш браузера
+export const previewUrl = (templateId) => `assets/thumbs/${encodeURIComponent(templateId)}.webp?v=${PREVIEW_VERSION}`;
 
 export function newIdempotencyKey() {
   try {

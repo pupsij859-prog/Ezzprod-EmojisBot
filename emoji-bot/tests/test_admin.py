@@ -132,6 +132,29 @@ def test_premium_emoji_thumbs_and_id_allowlist(client):
 
 def test_custom_emoji_ids_from_env_are_validated(tmp_path):
     s = make_settings(tmp_path, custom_emoji=(("gift", "123"), ("warn", "abc"), ("nope", "5")))
+    assert emoji.ids(s) == {"gift": "123"}
+    assert emoji.public_map(s, bot_ready=True)["gift"]["custom"] is True
+    assert emoji.public_map(s, bot_ready=False)["gift"]["custom"] is False
+
+
+def test_premium_emoji_thumbs_and_id_allowlist(client):
+    from app import premium
+
+    packs = {p["id"]: len(p["items"]) for p in premium.packs()}
+    assert packs == {"finance": 60, "kawaii": 150}
+    webapp = Path(__file__).resolve().parent.parent / "webapp"
+    first = premium.packs()[0]["items"][0]["id"]
+    assert (webapp / premium.thumb(first)).is_file()
+    # известный ID разрешён (без бота файла просто нет), чужой — нет
+    assert client.get(f"/api/emoji/id/{first}").json()["detail"]["code"] == "no_emoji"
+    assert emoji.allowed_id(client.app_state.ctx.settings, first)
+    assert not emoji.allowed_id(client.app_state.ctx.settings, "123456789")
+    assert not emoji.allowed_id(client.app_state.ctx.settings, "../etc")
+    assert client.get("/api/premium").status_code == 404  # списка паков в API больше нет
+
+
+def test_custom_emoji_ids_from_env_are_validated(tmp_path):
+    s = make_settings(tmp_path, custom_emoji=(("gift", "123"), ("warn", "abc"), ("nope", "5")))
     ids = emoji.ids(s)
     assert ids["gift"] == "123" and "warn" not in ids and "nope" not in ids
     assert emoji.allowed_id(s, "123")
