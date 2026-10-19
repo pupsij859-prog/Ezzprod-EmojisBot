@@ -1,0 +1,84 @@
+/* Токены дизайна EzzProd — тёмный минимализм: почти чёрный фон, графитовые плитки,
+   мягкая цветная подсветка внутри плиток, белый текст и белые кнопки. */
+:root {
+  color-scheme: dark;
+
+  /* фон и поверхности */
+  --bg: #0a0a0a;
+  --bg-deep: #050505;
+  --surface: #161617;
+  --surface-hi: #1b1b1d;
+  --surface-2: #1f1f21;
+  --surface-3: #2a2a2d;
+  --tile: linear-gradient(180deg, #1a1a1c 0%, #141415 100%);
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --scrim: rgba(0, 0, 0, 0.66);
+
+  /* текст */
+  --text: #ffffff;
+  --text-2: rgba(255, 255, 255, 0.62);
+  --text-3: rgba(255, 255, 255, 0.38);
+  --text-on-accent: #0a0a0a;
+
+  /* акцент: белый */
+  --accent: #ffffff;
+  --accent-hover: #e8e8ea;
+  --btn-disabled: rgba(255, 255, 255, 0.07);
+  --gold: #e2c262;
+  --success: #7fcf9f;
+  --warn: #e2c262;
+  --danger: #f08784;
+
+  /* подсветка плиток (r, g, b) */
+  --glow-steel: 128, 136, 158;
+  --glow-gold: 196, 166, 70;
+  --glow-green: 86, 150, 88;
+  --glow-rust: 168, 88, 62;
+  --glow-olive: 166, 158, 64;
+  --glow-amber: 204, 150, 58;
+  --glow-rose: 186, 92, 120;
+  --glow-violet: 128, 104, 196;
+
+  /* радиусы */
+  --r-xs: 10px;
+  --r-sm: 12px;
+  --r-md: 16px;
+  --r-lg: 18px;
+  --r-xl: 26px;
+  --r-pill: 999px;
+
+  /* отступы */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --page-x: clamp(18px, 8.5vw, 36px);
+  --gutter: 16px;
+
+  --font: 'Open Sans', -apple-system, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --font-wide: 'Unbounded', 'Arial Black', 'Segoe UI Black', var(--font); /* жетоны PRO / OWNER */
+  --font-mono:ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+
+  --ease: cubic-bezier(0.22, 0.8, 0.24, 1);
+  --ease-spring: cubic-bezier(0.34, 1.32, 0.5, 1);
+  --t-fast: 140ms;
+  --t-med: 260ms;
+  --t-slow: 420ms;
+
+  --z-dock: 20;
+  --z-overlay: 40;
+  --z-toast: 90;
+
+  --top: 0px;
+  --devframe-h: 52px;
+  --safe-top: max(env(safe-area-inset-top, 0px), calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)));
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
+  --nav-h: 76px; /* капсула ~66px + отступ снизу 10px */
+  --dock-h: calc(var(--nav-h) + var(--safe-bottom));
+}
+
+body.has-devframe { --top: var(--devframe-h); }

@@ -84,6 +84,27 @@ export function openLink(url) {
   window.open(url, '_blank', 'noopener');
 }
 
+/** Ссылка t.me на мини-приложение кошелька (счёт CryptoBot / xRocket): открывается поверх нашего Mini App,
+ *  без перехода в чат кошелька. Наше приложение остаётся открытым и ждёт оплату. */
+export function openWalletLink(url) {
+  try {
+    if (WA && inTelegram) { WA.openTelegramLink(url); return true; }
+  } catch {}
+  window.open(url, '_blank', 'noopener');
+  return false;
+}
+
+/** Mini App снова на экране (вернулись из кошелька): событие Telegram «activated» или видимость вкладки. */
+export function onAppActive(fn) {
+  const vis = () => { if (document.visibilityState === 'visible') fn(); };
+  document.addEventListener('visibilitychange', vis);
+  try { if (WA && WA.onEvent) WA.onEvent('activated', fn); } catch {}
+  return () => {
+    document.removeEventListener('visibilitychange', vis);
+    try { if (WA && WA.offEvent) WA.offEvent('activated', fn); } catch {}
+  };
+}
+
 export function shareLink(url, text) {
   const share = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`;
   openLink(share);

@@ -86,9 +86,10 @@ async def get_user(db: Database, user_id: int):
 
 
 async def upsert_user(
-    db: Database, settings: Settings, tg: dict, ref_code: str | None = None
+    db: Database, settings: Settings, tg: dict, ref_code: str | None = None, partner: str | None = None
 ) -> tuple[Any, bool]:
-    """Создаёт пользователя при первом обращении. Реферал привязывается ТОЛЬКО при создании.
+    """Создаёт пользователя при первом обращении. Реферал и партнёрская ссылка (app/partners.py) привязываются
+    ТОЛЬКО при создании; награду партнёру за регистрацию для уведомления отдаёт partners.signup_reward.
 
     Обычное чтение (пользователь есть, данные не изменились) не берёт блокировку записи."""
     uid = int(tg["id"])
@@ -116,6 +117,10 @@ async def upsert_user(
             )
             if settings.signup_gens > 0:
                 await _apply(t, uid, settings.signup_gens, "signup", str(uid))
+            if partner and referred_by is None:
+                from . import partners
+
+                await partners.attach_new_user(t, uid, partner)
             created = True
         elif (row["username"], row["first_name"], row["last_name"]) != (username, first, last):
             await t.execute(
@@ -162,13 +167,15 @@ def validate_pack_request(settings: Settings, body: dict) -> dict:
         "color": color,
         "stroke": stroke,
         "size": clean_size(body.get("size")),
-        "font_id": clean_logo_id(body.get("font_id"), "font"),
+        "place": clean_place(body.get("place")),
+        "grad": clean_grad(body.get("grad")),
+        "font_id": clean_font_id(body.get("font_id")),
         "overrides": clean_overrides(settings, body.get("overrides"), ids),
     }
 
 
-ITEM_KEYS = ("text", "logo_id", "color", "stroke", "size", "font_id", "edit")
-PACK_KEYS = ("text", "logo_id", "color", "stroke", "size", "font_id")
+ITEM_KEYS = ("text", "logo_id", "color", "stroke", "size", "place", "grad", "font_id", "edit")
+PACK_KEYS = ("text", "logo_id", "color", "stroke", "size", "place", "grad", "font_id")
 
 
 def clean_size(value) -> int:
@@ -178,6 +185,26 @@ def clean_size(value) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValidationFailed("size")
     return int(max(40, min(160, round(value))))
+
+
+def clean_place(value) -> dict | None:
+    """«Положение надписи»: сдвиг и поворот (app/lottie.py → clean_place)."""
+    from . import lottie
+
+    try:
+        return lottie.clean_place(value)
+    except ValueError as exc:
+        raise ValidationFailed("place") from exc
+
+
+def clean_grad(value) -> dict | None:
+    """Градиент на ник, логотип и/или заливку (app/lottie.py → clean_grad)."""
+    from . import lottie
+
+    try:
+        return lottie.clean_grad(value)
+    except ValueError as exc:
+        raise ValidationFailed("grad") from exc
 
 
 def clean_edit(value) -> dict | None:
@@ -203,6 +230,15 @@ def clean_logo_id(value, field: str = "logo") -> str | None:
     return value
 
 
+def clean_font_id(value) -> str | None:
+    """Шрифт ника: id готового шрифта (app/user_fonts.py → PRESETS), id своего (32 hex) или None — стандартный."""
+    from .user_fonts import is_preset
+
+    if isinstance(value, str) and is_preset(value):
+        return value
+    return clean_logo_id(value, "font")
+
+
 def clean_overrides(settings: Settings, raw, ids: list[str]) -> dict[str, dict]:
     """Свои настройки отдельных элементов: {template_id: {text?, logo_id?, color?, stroke?, size?, edit?}}.
     Есть ключ — значение заменяет общее (в том числе пустое: «без ника», «родной цвет», «без логотипа»).
@@ -223,12 +259,16 @@ def clean_overrides(settings: Settings, raw, ids: list[str]) -> dict[str, dict]:
         if "logo_id" in item:
             clean["logo_id"] = clean_logo_id(item["logo_id"])
         if "font_id" in item:
-            clean["font_id"] = clean_logo_id(item["font_id"], "font")
+            clean["font_id"] = clean_font_id(item["font_id"])
         for key in ("color", "stroke"):
             if key in item:
                 clean[key] = clean_color(item[key])
         if "size" in item:
             clean["size"] = clean_size(item["size"])
+        if "place" in item:
+            clean["place"] = clean_place(item["place"])
+        if "grad" in item:
+            clean["grad"] = clean_grad(item["grad"])
         if "edit" in item:
             edit = clean_edit(item["edit"])
             if edit:
@@ -247,6 +287,20 @@ def clean_color(value) -> str | None:
     return value.lower()
 
 
+async def _check_owned(t, user_id: int, looks: list[dict]) -> None:
+    """Логотипы и свои шрифты в настройках — только свои (готовые шрифты — всем)."""
+    from .user_fonts import is_preset
+
+    for logo_id in {lk.get("logo_id") for lk in looks} - {None}:
+        if await t.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (logo_id, user_id)) is None:
+            raise ValidationFailed("logo")
+    for font_id in {lk.get("font_id") for lk in looks} - {None}:
+        if is_preset(font_id):
+            continue
+        if await t.fetchone("SELECT 1 FROM fonts WHERE id=? AND user_id=?", (font_id, user_id)) is None:
+            raise ValidationFailed("font")
+
+
 async def create_pack(
     db: Database, settings: Settings, user_id: int, req: dict, duration_s: float, idem_key: str | None = None
 ) -> tuple[dict, bool]:
@@ -263,16 +317,7 @@ async def create_pack(
             if existing is not None:
                 return pack_view(existing), False
         overrides = req.get("overrides") or {}
-        logo_ids = {req["logo_id"], *(o.get("logo_id") for o in overrides.values())} - {None}
-        for logo_id in logo_ids:  # логотип — только свой
-            logo = await t.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (logo_id, user_id))
-            if logo is None:
-                raise ValidationFailed("logo")
-        font_ids = {req.get("font_id"), *(o.get("font_id") for o in overrides.values())} - {None}
-        for font_id in font_ids:  # шрифт — только свой
-            font = await t.fetchone("SELECT 1 FROM fonts WHERE id=? AND user_id=?", (font_id, user_id))
-            if font is None:
-                raise ValidationFailed("font")
+        await _check_owned(t, user_id, [req, *overrides.values()])
         user = await t.fetchone("SELECT balance, plan FROM users WHERE id=?", (user_id,))
         if user is None:
             raise ValidationFailed("user")
@@ -283,13 +328,13 @@ async def create_pack(
         suffix = "эмодзи" if req["type"] == "emoji" else "стикеры"
         title = f"{req['text'] or settings.brand_name} · {suffix}"
         cur = await t.execute(
-            "INSERT INTO packs (user_id, type, title, status, count, items, params, idem_key, duration_s, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO packs (user_id, type, title, status, count, items, params, idem_key, duration_s, created_at, live_build)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 user_id, req["type"], title, "processing", cost,
                 json.dumps(req["template_ids"]),
                 json.dumps({k: req[k] for k in PACK_KEYS if k in req}),
-                idem_key, duration_s, now(),
+                idem_key, duration_s, now(), int(not settings.demo_mode),
             ),
         )
         pack_id = cur.lastrowid
@@ -309,11 +354,12 @@ def pack_view(row) -> dict:
     done = row["done"] if "done" in keys else 0
     failed = row["failed_items"] if "failed_items" in keys else 0
     if row["status"] == "processing":
-        # реальная сборка: доля добавленных элементов; имитация — по времени. Берём большее, не выше 0.99
+        # Живая сборка, включая очередь, показывает только фактически обработанные элементы.
         by_items = (done + failed) / row["count"] if row["count"] else 0
         elapsed = time.time() - row["created_at"]
         by_time = min(0.95, elapsed / row["duration_s"]) if row["duration_s"] > 0 else 0
-        progress = min(0.99, max(by_items, by_time))
+        live = ("live_build" in keys and row["live_build"]) or ("set_name" in keys and row["set_name"])
+        progress = min(0.99, by_items if live else max(by_items, by_time))
     else:
         progress = 1.0 if row["status"] == "ready" else 0.0
     return {
@@ -329,17 +375,156 @@ def pack_view(row) -> dict:
         "progress": round(progress, 3),
         "created_at": row["created_at"],
         "preview": items[:4],
+        "items": items,
         "params": {"text": params.get("text", ""), "color": params.get("color"), "stroke": params.get("stroke")},
     }
 
 
 async def get_pack(db: Database, user_id: int, pack_id: int):
-    return await db.fetchone("SELECT * FROM packs WHERE id=? AND user_id=?", (pack_id, user_id))
+    return await db.fetchone(
+        "SELECT * FROM packs WHERE id=? AND user_id=? AND (deleted_at IS NULL OR deleted_at = 0)",
+        (pack_id, user_id),
+    )
 
 
 async def list_packs(db: Database, user_id: int) -> list[dict]:
-    rows = await db.fetchall("SELECT * FROM packs WHERE user_id=? ORDER BY id DESC LIMIT 100", (user_id,))
+    rows = await db.fetchall(
+        "SELECT * FROM packs WHERE user_id=? AND (deleted_at IS NULL OR deleted_at = 0) ORDER BY id DESC LIMIT 100",
+        (user_id,),
+    )
     return [pack_view(r) for r in rows]
+
+
+async def delete_pack(db: Database, user_id: int, pack_id: int) -> bool:
+    """Удаляет пак из списка пользователя (soft delete). Собирающийся пак удалять нельзя."""
+    async with db.tx() as t:
+        row = await t.fetchone(
+            "SELECT status FROM packs WHERE id=? AND user_id=? AND (deleted_at IS NULL OR deleted_at = 0)",
+            (pack_id, user_id),
+        )
+        if row is None:
+            return False
+        if row["status"] == "processing":
+            raise ValidationFailed("pack_processing")
+        await t.execute("UPDATE packs SET deleted_at=? WHERE id=?", (now(), pack_id))
+        return True
+
+
+async def add_pack_items(
+    db: Database,
+    settings: Settings,
+    user_id: int,
+    pack_id: int,
+    template_ids: list[str],
+    overrides: dict | None = None,
+    params: dict | None = None,
+) -> dict:
+    """Добавляет новые стикеры/эмодзи в существующий пак пользователя и запускает досборку."""
+    if not template_ids:
+        raise ValidationFailed("template_ids")
+    for tid in template_ids:
+        if catalog.get(tid) is None:
+            raise ValidationFailed("template_ids")
+
+    # настройки новых элементов проверяем так же строго, как при создании пака
+    overrides = clean_overrides(settings, overrides, template_ids)
+    params = clean_overrides(settings, {"*": params}, ["*"]).get("*") if params else None
+    if params and "edit" in params:
+        raise ValidationFailed("params")  # правки редактора бывают только у отдельных элементов
+
+    cost = len(template_ids)
+    async with db.tx() as t:
+        pack = await t.fetchone(
+            "SELECT * FROM packs WHERE id=? AND user_id=? AND (deleted_at IS NULL OR deleted_at = 0)",
+            (pack_id, user_id),
+        )
+        if pack is None:
+            raise ValidationFailed("pack")
+        if pack["status"] == "processing":
+            raise ValidationFailed("pack_processing")
+        await _check_owned(t, user_id, [*([params] if params else []), *overrides.values()])
+
+        user = await t.fetchone("SELECT balance, plan FROM users WHERE id=?", (user_id,))
+        if user is None:
+            raise ValidationFailed("user")
+        if any(o.get("edit") for o in overrides.values()) and user["plan"] != "pro":
+            raise ProRequired()
+        if user["balance"] < cost:
+            raise InsufficientBalance(need=cost - user["balance"])
+
+        max_limit = settings.emoji_pack_max if pack["type"] == "emoji" else settings.sticker_pack_max
+        current_items = json.loads(pack["items"])
+        if len(current_items) + cost > max_limit:
+            raise ValidationFailed("too_many_items")
+
+        row = await t.fetchone("SELECT COALESCE(MAX(idx), -1) AS max_idx FROM pack_items WHERE pack_id=?", (pack_id,))
+        max_idx = row["max_idx"] if row else -1
+
+        await _apply(t, user_id, -cost, "pack_item_add", str(pack_id))
+
+        new_items_list = list(current_items)
+        for offset, tid in enumerate(template_ids):
+            idx = max_idx + 1 + offset
+            own = {**(params or {}), **overrides.get(tid, {})}  # свои настройки элемента поверх общих
+            item_params = json.dumps(own) if own else None
+            await t.execute(
+                "INSERT INTO pack_items (pack_id, idx, template_id, status, params) VALUES (?,?,?,?,?)",
+                (pack_id, idx, tid, "pending", item_params),
+            )
+            new_items_list.append(tid)
+
+        new_duration = round(3 + cost * 0.7, 1)
+        await t.execute(
+            "UPDATE packs SET items=?, count=?, status='processing', duration_s=?, error=NULL, created_at=? WHERE id=?",
+            (json.dumps(new_items_list), len(new_items_list), new_duration, now(), pack_id),
+        )
+        updated = await t.fetchone("SELECT * FROM packs WHERE id=?", (pack_id,))
+    return pack_view(updated)
+
+
+async def delete_pack_item(
+    db: Database, settings: Settings, user_id: int, pack_id: int, template_id: str, bot=None
+) -> dict:
+    """Удаляет один стикер/эмодзи из пака пользователя."""
+    async with db.tx() as t:
+        pack = await t.fetchone(
+            "SELECT * FROM packs WHERE id=? AND user_id=? AND (deleted_at IS NULL OR deleted_at = 0)",
+            (pack_id, user_id),
+        )
+        if pack is None:
+            raise ValidationFailed("pack")
+        if pack["status"] == "processing":
+            raise ValidationFailed("pack_processing")
+
+        items = json.loads(pack["items"])
+        if template_id not in items:
+            raise ValidationFailed("item_not_found")
+        if len(items) <= 1:
+            raise ValidationFailed("cannot_empty_pack")
+
+        idx_to_remove = items.index(template_id)
+        items.remove(template_id)
+
+        await t.execute(
+            "DELETE FROM pack_items WHERE pack_id=? AND template_id=?",
+            (pack_id, template_id),
+        )
+
+        await t.execute(
+            "UPDATE packs SET items=?, count=? WHERE id=?",
+            (json.dumps(items), len(items), pack_id),
+        )
+        updated = await t.fetchone("SELECT * FROM packs WHERE id=?", (pack_id,))
+
+    if bot and updated.get("set_name"):
+        try:
+            s_set = await bot.get_sticker_set(name=updated["set_name"])
+            if s_set and idx_to_remove < len(s_set.stickers):
+                await bot.delete_sticker_from_set(sticker=s_set.stickers[idx_to_remove].file_id)
+        except Exception:
+            pass
+
+    return pack_view(updated)
 
 
 @dataclass
@@ -348,6 +533,7 @@ class FinishResult:
     pack: dict
     reward_user_id: int | None = None
     reward_amount: int = 0
+    reward_kind: str = "referral"  # 'referral' — за друга, 'partner' — партнёру за приведённого по его ссылке
 
 
 async def finish_pack(db: Database, settings: Settings, pack_id: int, link: str) -> FinishResult | None:
@@ -368,6 +554,13 @@ async def finish_pack(db: Database, settings: Settings, pack_id: int, link: str)
         reward = await _maybe_reward_referrer(t, settings, uid)
         if reward:
             result.reward_user_id, result.reward_amount = reward
+        else:
+            from . import partners
+
+            reward = await partners.maybe_reward(t, uid)
+            if reward:
+                result.reward_user_id, result.reward_amount = reward
+                result.reward_kind = "partner"
     return result
 
 
@@ -406,7 +599,12 @@ async def fail_pack(db: Database, pack_id: int) -> int | None:
         if cur.rowcount == 0:
             return None
         pack = await t.fetchone("SELECT user_id, count FROM packs WHERE id=?", (pack_id,))
-        await _apply(t, pack["user_id"], pack["count"], "pack_refund", str(pack_id))
+        partial = await t.fetchone(
+            "SELECT COALESCE(SUM(delta),0) AS n FROM ledger WHERE reason='pack_partial_refund' AND ref=? AND user_id=?",
+            (str(pack_id), pack["user_id"]),
+        )
+        # Частичный возврат мог пройти до сбоя записи результата; полный возврат дополняет его.
+        await _apply(t, pack["user_id"], max(0, pack["count"] - partial["n"]), "pack_refund", str(pack_id))
         return pack["user_id"]
 
 
@@ -522,14 +720,27 @@ async def delete_style(db: Database, user_id: int, style_id: int) -> bool:
 
 # ───────────────────────── платежи ─────────────────────────
 
-async def create_payment(db: Database, user_id: int, qty: int, stars: int) -> str:
+async def create_payment(
+    db: Database,
+    user_id: int,
+    qty: int,
+    stars: int,
+    method: str = "stars",
+    amount_rub: int = 0,
+    external_id: str | None = None,
+) -> str:
     payment_id = uuid.uuid4().hex
     async with db.tx() as t:
         await t.execute(
-            "INSERT INTO payments (id, user_id, qty, stars, created_at) VALUES (?,?,?,?,?)",
-            (payment_id, user_id, qty, stars, now()),
+            "INSERT INTO payments (id, user_id, qty, stars, method, amount_rub, external_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (payment_id, user_id, qty, stars, method, amount_rub, external_id, now()),
         )
     return payment_id
+
+
+async def set_payment_external_id(db: Database, payment_id: str, external_id: str) -> None:
+    async with db.tx() as t:
+        await t.execute("UPDATE payments SET external_id=? WHERE id=?", (external_id, payment_id))
 
 
 async def get_payment(db: Database, payment_id: str):
@@ -545,6 +756,7 @@ class SettleResult:
     repeat: bool = False   # человек заплатил по тому же счёту ещё раз
     reward_user_id: int | None = None  # первая покупка приглашённого открыла награду пригласившему
     reward_amount: int = 0
+    reward_kind: str = "referral"      # или 'partner' — награда владельцу партнёрской ссылки
 
 
 def _plan_for(settings: Settings, purchased_total: int) -> str:
@@ -556,7 +768,7 @@ async def settle_payment(
     settings: Settings,
     payment_id: str,
     charge_id: str,
-    total_amount: int,
+    total_amount: int | float,
     user_id: int,
     currency: str = "XTR",
     provider: str = "stars",
@@ -572,17 +784,21 @@ async def settle_payment(
         cur = await t.execute(
             "INSERT OR IGNORE INTO payment_events (provider, charge_id, payload, user_id, amount, currency, status, created_at)"
             " VALUES (?,?,?,?,?,?,'received',?)",
-            (provider, charge_id, payment_id, user_id, total_amount, currency, now()),
+            (provider, charge_id, payment_id, user_id, int(total_amount) if isinstance(total_amount, (int, float)) else 0, currency, now()),
         )
         if cur.rowcount == 0:
             return None
 
         order = await t.fetchone("SELECT * FROM payments WHERE id=?", (payment_id,))
         user = await t.fetchone("SELECT balance, purchased_total FROM users WHERE id=?", (user_id,))
-        if (
-            order is None or user is None or currency != "XTR"
-            or order["user_id"] != user_id or order["stars"] != total_amount
-        ):
+        valid = False
+        if order is not None and user is not None and order["user_id"] == user_id:
+            if provider == "stars":
+                valid = (currency == "XTR" and int(order["stars"]) == int(total_amount))
+            elif provider in ("cryptobot", "xrocket", "dev"):
+                valid = True
+
+        if not valid:
             await t.execute(
                 "UPDATE payment_events SET status='needs_review' WHERE provider=? AND charge_id=?", (provider, charge_id)
             )
@@ -595,17 +811,23 @@ async def settle_payment(
             )
         await _apply(t, user_id, order["qty"], "purchase", charge_id)
         purchased = user["purchased_total"] + order["qty"]
-        await t.execute("UPDATE users SET purchased_total=?, plan=? WHERE id=?",
+        await t.execute("UPDATE users SET purchased_total=?, plan=?, discount_pct=0 WHERE id=?",
                         (purchased, _plan_for(settings, purchased), user_id))
         await t.execute(
             "UPDATE payment_events SET status=? WHERE provider=? AND charge_id=?",
             ("credited_repeat" if repeat else "credited", provider, charge_id),
         )
         reward = await _maybe_reward_referrer(t, settings, user_id)
+        kind = "referral"
+        if not reward:
+            from . import partners
+
+            reward, kind = await partners.maybe_reward(t, user_id), "partner"
         balance = (await t.fetchone("SELECT balance FROM users WHERE id=?", (user_id,)))["balance"]
     result = SettleResult(user_id=user_id, qty=order["qty"], balance=balance, status="credited", repeat=repeat)
     if reward:
         result.reward_user_id, result.reward_amount = reward
+        result.reward_kind = kind
     return result
 
 

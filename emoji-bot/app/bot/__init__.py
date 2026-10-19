@@ -47,35 +47,66 @@ class TelegramNotifier:
 
     async def _send(self, user_id: int, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
         try:
-            await self._bot.send_message(user_id, text, reply_markup=markup)
-        except Exception as exc:  # пользователь мог заблокировать бота — это не ошибка сервиса
-            log.warning("не доставлено сообщение пользователю %s: %s", user_id, exc)
+            await self._bot.send_message(user_id, text, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            try:
+                await self._bot.send_message(user_id, text, reply_markup=markup)
+            except Exception as exc:  # пользователь мог заблокировать бота — это не ошибка сервиса
+                log.warning("не доставлено сообщение пользователю %s: %s", user_id, exc)
+
+    def _app_row(self, text: str) -> list[InlineKeyboardButton]:
+        """Кнопка, открывающая редактор (Mini App), — если есть https-адрес."""
+        url = self._ctx.webapp_url
+        return [InlineKeyboardButton(text=text, web_app=WebAppInfo(url=url))] if url.startswith("https://") else []
+
+    def _markup(self, *rows) -> InlineKeyboardMarkup | None:
+        rows = [r for r in rows if r]
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
     async def pack_ready(self, user_id: int, pack: dict) -> None:
         s = self._ctx.settings
         link = pack.get("link") or ""
-        markup = None
+        rows = []
         if link.startswith("https://"):
             share = f"https://t.me/share/url?url={quote(link, safe='')}&text={quote(texts.share_text(pack['type']), safe='')}"
-            markup = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=texts.BTN_VIEW_RESULT, url=link)],
-                [InlineKeyboardButton(text=texts.BTN_SEND_FRIEND, url=share)],
-            ])
+            rows = [
+                [texts.make_button(self._ctx, "pack_ready_add", url=link)],
+                [texts.make_button(self._ctx, "pack_ready_share", url=share)],
+            ]
+        more_row = []
+        if self._ctx.webapp_url.startswith("https://"):
+            more_row = [texts.make_button(self._ctx, "pack_ready_more", web_app_url=self._ctx.webapp_url)]
+        markup = self._markup(*rows, more_row)
         name = (pack.get("params") or {}).get("text") or s.brand_name
-        await self._send(user_id, texts.pack_ready(name, s.demo_mode, pack.get("failed", 0)), markup)
+        await self._send(user_id, texts.pack_ready(name, s.demo_mode, pack.get("failed", 0), ctx=self._ctx), markup)
 
     async def pack_failed(self, user_id: int, pack_id: int) -> None:
-        await self._send(user_id, texts.pack_failed())
+        retry_row = []
+        if self._ctx.webapp_url.startswith("https://"):
+            retry_row = [texts.make_button(self._ctx, "pack_failed_retry", web_app_url=self._ctx.webapp_url)]
+        await self._send(user_id, texts.pack_failed(ctx=self._ctx), self._markup(retry_row))
 
     async def referral_reward(self, user_id: int, amount: int) -> None:
-        await self._send(user_id, texts.referral_reward(amount))
+        app_row = []
+        if self._ctx.webapp_url.startswith("https://"):
+            app_row = [texts.make_button(self._ctx, "referral_reward_editor", web_app_url=self._ctx.webapp_url)]
+        await self._send(user_id, texts.referral_reward(amount, ctx=self._ctx), self._markup(app_row))
+
+    async def partner_reward(self, user_id: int, amount: int) -> None:
+        app_row = []
+        if self._ctx.webapp_url.startswith("https://"):
+            app_row = [texts.make_button(self._ctx, "referral_reward_editor", web_app_url=self._ctx.webapp_url)]
+        await self._send(user_id, texts.partner_reward(amount, ctx=self._ctx), self._markup(app_row))
 
     async def payment_ok(self, user_id: int, qty: int, balance: int) -> None:
-        await self._send(user_id, texts.payment_ok(qty, balance))
+        app_row = []
+        if self._ctx.webapp_url.startswith("https://"):
+            app_row = [texts.make_button(self._ctx, "payment_ok_editor", web_app_url=self._ctx.webapp_url)]
+        await self._send(user_id, texts.payment_ok(qty, balance, ctx=self._ctx), self._markup(app_row))
 
     async def admin_alert(self, text: str) -> None:
         for admin_id in {*self._ctx.settings.admin_ids, *self._ctx.extra_admins}:
-            await self._send(admin_id, text)
+            await self._send(admin_id, texts.admin_alert(text))
 
 
 async def set_menu_button(bot: Bot, url: str) -> None:

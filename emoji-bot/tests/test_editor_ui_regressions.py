@@ -52,7 +52,7 @@ def test_square_pixel_fills_open_nested_paths_and_leaves_cell_gaps():
     shape = {"c": False, "v": [[96, 96], [224, 96], [224, 224], [96, 224]],
              "i": [[0, 0]] * 4, "o": [[0, 0]] * 4}
     nested = {"ty": "gr", "it": [{"ty": "sh", "ks": {"a": 0, "k": shape}}, editor._tr()]}
-    out = editor.apply(copy.deepcopy(scene(nested, editor._fill([1, 0, 0]))), editor.clean_edit({"fx": {"pixel": {"on": True, "gap": 12}}}))
+    out = editor.apply(copy.deepcopy(scene(nested, editor._fill([1, 0, 0]))), editor.clean_edit({"fx": {"pixel": {"on": True, "grid": 32, "gap": 12}}}))
     cells = pixel_cells(out)
     assert len(cells) == 64  # 128 px / клетка 16 px = 8×8
     assert all(rc["s"]["k"] == [14.08, 14.08] for _c, rc in cells)  # зазор 12% клетки
@@ -62,7 +62,7 @@ def test_square_pixel_fills_open_nested_paths_and_leaves_cell_gaps():
 def test_pixel_mosaic_has_one_color_per_cell():
     # красный квадрат поверх синего: под красным синих клеток нет, клетки не накладываются
     out = editor.apply(scene(square(128, 128, 64, [1, 0, 0]), square(96, 96, 128, [0, 0, 1])),
-                       editor.clean_edit({"fx": {"pixel": {"on": True}}}))
+                       editor.clean_edit({"fx": {"pixel": {"on": True, "grid": 32}}}))
     cells = pixel_cells(out)
     places = [tuple(rc["p"]["k"]) for _c, rc in cells]
     assert len(places) == len(set(places)) == 64
@@ -88,7 +88,7 @@ def test_pixel_nonzero_fill_keeps_disjoint_contours_with_opposite_winding():
         if reverse:
             v.reverse()
         return {"ty": "sh", "ks": {"k": {"c": True, "v": v, "i": [[0, 0]] * 4, "o": [[0, 0]] * 4}}}
-    out = editor.apply(scene(shape(96), shape(224, True), editor._fill([1, 0, 0])), editor.clean_edit({"fx": {"pixel": {"on": True}}}))
+    out = editor.apply(scene(shape(96), shape(224, True), editor._fill([1, 0, 0])), editor.clean_edit({"fx": {"pixel": {"on": True, "grid": 32}}}))
     assert len(pixel_cells(out)) == 32  # обе фигуры, а не только контур с «главным» направлением
 
 
@@ -112,7 +112,7 @@ def test_pixel_draws_reused_asset_even_when_first_instance_has_zero_scale():
                        {"ty": 0, "ind": 2, "refId": "reused", "ks": {"s": {"k": [100, 100]}}}],
             "assets": [{"id": "reused", "layers": [{"ty": 4, "ind": 1, "ks": {},
                         "shapes": [{"ty": "sh", "ks": {"k": shape}}, editor._fill([1, 0, 0])]}]}]}
-    out = editor.apply(anim, editor.clean_edit({"fx": {"pixel": {"on": True}}}))
+    out = editor.apply(anim, editor.clean_edit({"fx": {"pixel": {"on": True, "grid": 32}}}))
     assert len(pixel_cells(out)) == 64
 
 

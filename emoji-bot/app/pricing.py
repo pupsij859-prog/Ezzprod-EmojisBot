@@ -13,9 +13,9 @@ from .config import Settings
 # способы оплаты: id → (название, подпись). Работают только те, у которых есть провайдер (см. enabled_methods)
 METHODS: tuple[tuple[str, str, str], ...] = (
     ("stars", "Звёзды", ""),
-    ("sbp", "СБП", "Через приложение банка"),
     ("xrocket", "xRocket", "USDT, TON и другие монеты"),
     ("cryptobot", "CryptoBot", "Оплата криптовалютой"),
+    ("sbp", "СБП", "Через приложение банка"),
 )
 
 
@@ -52,25 +52,33 @@ def _totals(settings: Settings, upto: int) -> list[int]:
     return raw
 
 
-def quote(settings: Settings, qty: int) -> Quote:
+def quote(settings: Settings, qty: int, user_discount_pct: int = 0) -> Quote:
     if qty < 1:
         raise ValueError("qty must be >= 1")
     upto = max(qty, settings.max_buy_qty)
     total = _totals(settings, upto)[qty]
+    if user_discount_pct > 0:
+        pct = max(0, min(99, int(user_discount_pct)))
+        total = max(1, round(total * (100 - pct) / 100))
     full = qty * settings.price_rub
     discount = round((1 - total / full) * 100) if full else 0
     return Quote(qty=qty, total=total, unit=total / qty, discount_pct=max(0, discount), stars=stars_for(settings, total))
 
 
 def enabled_methods(settings: Settings) -> set[str]:
-    """Пока подключены только Звёзды; CryptoBot, xRocket и СБП ждут ключей провайдеров."""
-    return {"stars"}
+    enabled = {"stars"}
+    if settings.xrocket_enabled:
+        enabled.add("xrocket")
+    if settings.cryptobot_enabled:
+        enabled.add("cryptobot")
+    return enabled
 
 
 def pricing_table(settings: Settings) -> dict:
     """Всё, что нужно клиенту, чтобы показать цены (totals[qty] — точная сумма в ₽)."""
     rate = f"{settings.rub_per_star:g}".replace(".", ",")
     enabled = enabled_methods(settings)
+    totals = _totals(settings, settings.max_buy_qty)
     return {
         "currency": "RUB",
         "unit": settings.price_rub,
@@ -81,9 +89,15 @@ def pricing_table(settings: Settings) -> dict:
         "rub_per_star": settings.rub_per_star,
         "max_qty": settings.max_buy_qty,
         "default_qty": 20,
-        "totals": _totals(settings, settings.max_buy_qty),
+        "totals": totals,
+        "stars_totals": [stars_for(settings, t) for t in totals],
         "methods": [
-            {"id": mid, "title": title, "sub": sub or f"1 звезда = {rate} ₽", "enabled": mid in enabled}
+            {
+                "id": mid,
+                "title": title,
+                "sub": sub or (f"1 звезда = {rate} ₽" if mid == "stars" else ("USDT, TON и др. крипта" if mid == "cryptobot" else "USDT, TON и чеки")),
+                "enabled": mid in enabled,
+            }
             for mid, title, sub in METHODS
         ],
     }

@@ -19,7 +19,9 @@ class Context:
     builder: PackBuilder
     runner: PackRunner
     notifier: Notifier = field(default_factory=NullNotifier)
-    payments: PaymentProvider | None = None
+    payments: Any = None
+    custom_texts: dict[str, str] = field(default_factory=dict)
+    custom_buttons: dict[str, dict] = field(default_factory=dict)
     limiter: RateLimiter = field(default_factory=RateLimiter)
     bot_username: str = ""
     bot: object | None = None  # aiogram.Bot, если бот запущен

@@ -54,6 +54,7 @@ _SET_LEVEL = {
     "STICKERSETS_TOO_MUCH": "too_many_sets",
     "STICKERSET_NOT_MODIFIED": "set_invalid",
     "BOT_TOKEN": "bot",
+    "NAME_OCCUPIED": "set_exists",
 }
 
 
@@ -80,8 +81,11 @@ class TelegramPublisher:
 
         try:
             s = await self._bot.get_sticker_set(name=name)
-        except TelegramBadRequest:
-            return None  # STICKERSET_INVALID — набора нет
+        except TelegramBadRequest as exc:
+            if "STICKERSET_INVALID" in str(exc).upper():
+                return None
+            # Ошибка запроса не означает, что набора нет: повторное создание опасно.
+            raise SetLevelError("lookup_failed", str(exc)) from exc
         return len(s.stickers)
 
     async def create(self, owner_id: int, name: str, title: str, kind: str, files: list[StickerFile]) -> None:
@@ -99,7 +103,10 @@ class TelegramPublisher:
 
         try:
             await coro
-        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        except TelegramForbiddenError as exc:
+            # Отсутствие доступа не исправится заменой файла: не перебираем весь пак.
+            raise SetLevelError("forbidden", str(exc)) from exc
+        except TelegramBadRequest as exc:
             raise classify(str(exc)) from exc
 
     def link(self, name: str, kind: str) -> str:

@@ -20,6 +20,7 @@ const stageFor = (p) => STAGES.reduce((acc, [from, label]) => (p >= from ? label
 export function openCreating(initial) {
   let alive = true;
   let finished = false;
+  let pollRequest = null;
 
   openOverlay({
     kind: 'screen',
@@ -27,6 +28,7 @@ export function openCreating(initial) {
     className: 'layer--creating',
     onClose: () => {
       alive = false;
+      pollRequest?.abort();
       if (!finished) toast('Соберём в фоне: пришлём сообщение, когда пак будет готов');
     },
     render: ({ close }) => {
@@ -54,17 +56,28 @@ export function openCreating(initial) {
       (async function poll() {
         let progress = initial.progress || 0;
         const started = Date.now();
+        let slowShown = false;
         while (alive) {
-          if (Date.now() - started > SLOW_AFTER_MS) return slow();
+          if (!slowShown && Date.now() - started > SLOW_AFTER_MS) {
+            slow();
+            slowShown = true;
+          }
+          const controller = new AbortController();
+          pollRequest = controller;
+          const timeout = setTimeout(() => controller.abort(), 15_000);
           try {
-            const pack = await api.pack(initial.id);
+            const pack = await api.pack(initial.id, controller.signal);
             if (!alive) return;
             if (pack.status === 'ready') { paint(1); await sleep(prefersReducedMotion() ? 0 : 350); return done(pack); }
-            if (pack.status === 'failed') return failed();
+            if (pack.status === 'failed') return failed(pack);
             progress = pack.progress;
           } catch { /* сеть моргнула — пробуем дальше */ }
-          paint(Math.max(progress, Math.min(0.95, (Date.now() - started) / 6000)));
-          await sleep(450);
+          finally {
+            clearTimeout(timeout);
+            if (pollRequest === controller) pollRequest = null;
+          }
+          paint(progress);
+          await sleep(slowShown ? 2000 : 1000);
         }
       }());
 
@@ -104,16 +117,21 @@ export function openCreating(initial) {
             Button({ label: 'Понятно', onClick: close })));
       }
 
-      function failed() {
+      function failed(pack) {
         finished = true;
         haptic.error();
         refreshMe().catch(() => {});
+        const reasons = {
+          build_timeout: 'Telegram не ответил вовремя. Генерации вернулись на баланс, попробуй ещё раз чуть позже',
+          telegram_unavailable: 'Не удалось связаться с Telegram. Генерации вернулись на баланс, попробуй ещё раз чуть позже',
+          telegram_busy: 'Telegram временно ограничил загрузку. Генерации вернулись на баланс, попробуй чуть позже',
+        };
         root.replaceChildren(
           CloseButton(close),
           h('div', { class: 'creating__box' },
             BigEmoji('sad'),
             h('h2', { class: 'creating__title' }, 'Не получилось'),
-            h('p', { class: 'creating__sub' }, 'Генерации вернулись на баланс. Попробуй ещё раз'),
+            h('p', { class: 'creating__sub' }, reasons[pack.error] || 'Генерации вернулись на баланс. Попробуй ещё раз'),
             Button({ label: 'Понятно', onClick: close })));
       }
 

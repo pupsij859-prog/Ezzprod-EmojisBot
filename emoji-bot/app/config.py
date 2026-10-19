@@ -103,6 +103,9 @@ class Settings:
     webapp_url: str = ""            # публичный https-адрес Mini App
     brand_name: str = "EzzProd"
     support_username: str = ""      # без @; куда ведёт «поддержка»
+    subscription_required: bool = False
+    subscription_channel: str = ""  # @username или -100… для закрытого канала
+    subscription_url: str = ""      # для закрытого канала — пригласительная ссылка
     public_url_file: str = ""       # временный туннель: файл с текущим адресом Mini App (см. tools/tunnel.py)
     admin_ids: tuple[int, ...] = () # кому доступны /refund, алерты по платежам и «Админка» в Mini App
     custom_emoji: tuple[tuple[str, str], ...] = ()  # ключ:custom_emoji_id, дополняет app/emoji.py
@@ -121,12 +124,21 @@ class Settings:
     bulk_discount_pct: int = 10
     bulk_unit_from: int = 50        # от скольки штук фиксированная цена
     bulk_unit_rub: int = 4          # цена за штуку от bulk_unit_from, ₽
-    rub_per_star: float = 1.25      # курс для оплаты Звёздами: 1 ⭐ = столько ₽
+    rub_per_star: float = 2.625      # курс для оплаты Звёздами: 1 ⭐ = столько ₽ (цены в 2.1x ниже)
     max_buy_qty: int = 500
     pro_min_purchased: int = 20     # сколько генераций надо купить суммарно, чтобы открылся pro
     referral_reward: int = 3
     referral_daily_cap: int = 10    # макс. наград рефереру в сутки
     referral_lifetime_cap: int = 30 # макс. бесплатных наград рефереру за всё время
+
+    # крипто-платежи
+    cryptobot_token: str = ""
+    cryptobot_net: str = "mainnet"          # mainnet | testnet
+    cryptobot_enabled: bool = False
+    xrocket_key: str = ""
+    xrocket_net: str = "mainnet"            # mainnet | testnet
+    xrocket_enabled: bool = False
+    rub_per_usdt: float = 95.0              # курс для xRocket (USDT)
 
     # лимиты Telegram и продукта
     emoji_pack_max: int = 200
@@ -135,7 +147,7 @@ class Settings:
     styles_max: int = 20
     logos_max: int = 20
     logo_max_bytes: int = 2 * 1024 * 1024
-    fonts_max: int = 5
+    fonts_max: int = 10
     font_max_bytes: int = int(2.5 * 1024 * 1024)
 
     # имитация сборки: сколько секунд «собирается» пак
@@ -171,6 +183,9 @@ class Settings:
             webapp_url=_str("WEBAPP_URL").rstrip("/"),
             brand_name=_str("BRAND_NAME", "EzzProd") or "EzzProd",
             support_username=_str("SUPPORT_USERNAME").lstrip("@"),
+            subscription_required=_bool("SUBSCRIPTION_REQUIRED"),
+            subscription_channel=_str("SUBSCRIPTION_CHANNEL"),
+            subscription_url=_str("SUBSCRIPTION_URL"),
             public_url_file=_str("PUBLIC_URL_FILE"),
             admin_ids=_int_list("ADMIN_IDS"),
             custom_emoji=_pairs("CUSTOM_EMOJI"),
@@ -187,11 +202,18 @@ class Settings:
             bulk_discount_pct=_int("BULK_DISCOUNT_PCT", 10),
             bulk_unit_from=_int("BULK_UNIT_FROM", 50),
             bulk_unit_rub=_int("BULK_UNIT_RUB", 4),
-            rub_per_star=float(_str("RUB_PER_STAR", "1.25") or 1.25),
+            rub_per_star=float(_str("RUB_PER_STAR", "2.625") or 2.625),
             pro_min_purchased=_int("PRO_MIN_PURCHASED", 20),
             referral_reward=_int("REFERRAL_REWARD", 3),
             referral_daily_cap=_int("REFERRAL_DAILY_CAP", 10),
             referral_lifetime_cap=_int("REFERRAL_LIFETIME_CAP", 30),
+            cryptobot_token=_str("CRYPTOBOT_TOKEN"),
+            cryptobot_net=_str("CRYPTOBOT_NET", "mainnet"),
+            cryptobot_enabled=_bool("CRYPTOBOT_ENABLED", False),
+            xrocket_key=_str("XROCKET_KEY"),
+            xrocket_net=_str("XROCKET_NET", "mainnet"),
+            xrocket_enabled=_bool("XROCKET_ENABLED", False),
+            rub_per_usdt=float(_str("RUB_PER_USDT", "95.0") or 95.0),
         )
         settings.validate()
         return settings

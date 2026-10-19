@@ -13,7 +13,7 @@ import { openBuy } from './buy.js';
 
 // настройки эффектов по умолчанию — как FX в app/editor.py
 const FX = {
-  pixel: { on: false, grid: 32, shape: 'square', fps: 15, colors: 48, lines: 80, gap: 14 },
+  pixel: { on: false, grid: 24, shape: 'square', fps: 12, colors: 48, lines: 80, gap: 14 },
   metal: { on: false, width: 100 },
   glitch: { on: false, count: 6, len: 100, shift: 100, stripes: 8, dashes: 18, ghost: true, c1: '#ff1f4b', c2: '#18e0ff', seed: 1 },
   holo: { on: false, only: false, parts: [], palette: 'red', dir: 'cw', turns: 1, width: 100, bright: 88, gloss: true,
@@ -518,10 +518,10 @@ function mountEditor(root, id, close, onDone) {
     ];
     replaceChildren(fxBox, 
       ...fxRow('пикселизация', pixel.on, (v) => setFx('pixel', { on: v }, true), () => [
-        Slider({ label: 'сетка', min: 8, max: 64, value: pixel.grid, onInput: (v) => setFx('pixel', { grid: v }) }),
+        Slider({ label: 'сетка', min: 8, max: 40, value: pixel.grid, onInput: (v) => setFx('pixel', { grid: v }) }),
         Slider({ label: 'зазор клеток', min: 0, max: 35, value: pixel.gap, fmt: pct, onInput: (v) => setFx('pixel', { gap: v }) }),
         Seg([['square', 'квадрат'], ['soft', 'мягкий'], ['circle', 'круг']], pixel.shape, (v) => setFx('pixel', { shape: v })),
-        Slider({ label: 'кадров/с', min: 4, max: 30, value: pixel.fps, onInput: (v) => setFx('pixel', { fps: v }) }),
+        Slider({ label: 'кадров/с', min: 4, max: 20, value: pixel.fps, onInput: (v) => setFx('pixel', { fps: v }) }),
         Slider({ label: 'цветов', min: 2, max: 64, value: pixel.colors, fmt: (v) => (v >= 64 ? 'все' : String(v)), onInput: (v) => setFx('pixel', { colors: v }) }),
         Slider({ label: 'тонкие линии', min: 0, max: 100, value: pixel.lines, fmt: pct, onInput: (v) => setFx('pixel', { lines: v }) }),
       ]),

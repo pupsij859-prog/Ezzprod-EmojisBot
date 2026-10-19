@@ -17,6 +17,8 @@ import asyncio
 import json
 import logging
 import secrets
+
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from .. import catalog, services, user_fonts
 from ..config import Settings
 from ..db import Database
@@ -27,6 +29,11 @@ from .render import ItemSpec, Renderer, logo_vectors
 log = logging.getLogger("ezzprod.build")
 
 NETWORK_RETRIES = 4
+REQUEST_TIMEOUT_S = 30.0
+RENDER_TIMEOUT_S = 60.0
+BUILD_TIMEOUT_S = 720.0
+RECONCILE_TIMEOUT_S = 10.0
+MAX_FLOOD_WAIT_S = 420.0
 
 
 class BuildFailed(Exception):
@@ -51,7 +58,7 @@ def item_emoji(template_id: str) -> str:
 
 class TelegramPackBuilder:
     def __init__(self, db: Database, settings: Settings, renderer: Renderer, publisher: Publisher,
-                 bot_username: str, concurrency: int = 2, pause_s: float = 0.05) -> None:
+                 bot_username: str, concurrency: int = 1, pause_s: float = 0.05) -> None:
         self.db = db
         self.settings = settings
         self.renderer = renderer
@@ -68,7 +75,14 @@ class TelegramPackBuilder:
 
     async def build(self, pack_id: int, duration_s: float) -> BuildResult:
         async with self._slots:
-            return await self._build(pack_id)
+            try:
+                # Очередь не входит в бюджет: ограничиваем именно занятие слота сборки.
+                async with asyncio.timeout(BUILD_TIMEOUT_S):
+                    return await self._build(pack_id)
+            except (TimeoutError, TelegramNetworkError, TelegramServerError, OSError) as exc:
+                code = "build_timeout" if isinstance(exc, TimeoutError) else "telegram_unavailable"
+                log.warning("сборка пака %s прервана: %s", pack_id, code)
+                return await self._finish_interrupted(pack_id, code)
 
     # ───────────────────────── сборка ─────────────────────────
 
@@ -94,11 +108,13 @@ class TelegramPackBuilder:
             return ItemSpec(template_id=item["template_id"], kind=kind, text=p.get("text") or "",
                             color=p.get("color"), stroke=p.get("stroke"), logo_vectors=logos[logo_id],
                             size=p.get("size") or 100, edit_json=json.dumps(own.get("edit")) if own.get("edit") else "",
-                            font_path=str(user_fonts.font_path(self.settings, p.get("font_id")) or ""))
+                            font_path=str(user_fonts.font_path(self.settings, p.get("font_id")) or ""),
+                            place_json=json.dumps(p["place"]) if p.get("place") else "",
+                            grad_json=json.dumps(p["grad"]) if p.get("grad") else "")
 
         async def render(item) -> StickerFile | None:
             try:
-                data = await asyncio.to_thread(self.renderer.render, spec(item))
+                data = await asyncio.wait_for(asyncio.to_thread(self.renderer.render, spec(item)), RENDER_TIMEOUT_S)
             except Exception as exc:
                 log.exception("рендер элемента %s пака %s не удался", item["idx"], pack_id)
                 await services.mark_items(self.db, pack_id, [item["idx"]], "failed", f"render: {exc}")
@@ -117,16 +133,19 @@ class TelegramPackBuilder:
             else:
                 pending = await self._create(pack, name, kind, owner, pending, render)
 
+            published = await self._added(pack_id)
             for item in pending:
                 file = await render(item)
                 if file is None:
                     continue
                 try:
-                    await self._retry(lambda f=file: self.publisher.add(owner, name, kind, f))
+                    await self._retry(lambda f=file: self.publisher.add(owner, name, kind, f),
+                                      confirmed=lambda: self._has_count(name, published + 1))
                 except ItemError as exc:
                     await services.mark_items(self.db, pack_id, [item["idx"]], "failed", str(exc))
                     continue
                 await services.mark_items(self.db, pack_id, [item["idx"]], "added")
+                published += 1
                 await asyncio.sleep(self._pause)
         except SetLevelError as exc:
             log.warning("сборка пака %s остановлена: %s", pack_id, exc)
@@ -155,7 +174,8 @@ class TelegramPackBuilder:
         if not batch:
             raise BuildFailed("render")
         try:
-            await self._retry(lambda: self.publisher.create(owner, name, pack["title"], kind, [f for _, f in batch]))
+            await self._retry(lambda: self.publisher.create(owner, name, pack["title"], kind, [f for _, f in batch]),
+                              confirmed=lambda: self._has_count(name, len(batch)))
             await services.mark_items(self.db, pack_id, [i["idx"] for i, _ in batch], "added")
             return rest
         except ItemError:
@@ -163,7 +183,8 @@ class TelegramPackBuilder:
         # Telegram отверг какую-то картинку из пачки: создаём набор с одной, остальные пойдут по одной
         for n, (item, file) in enumerate(batch):
             try:
-                await self._retry(lambda f=file: self.publisher.create(owner, name, pack["title"], kind, [f]))
+                await self._retry(lambda f=file: self.publisher.create(owner, name, pack["title"], kind, [f]),
+                                  confirmed=lambda: self._has_count(name, 1))
             except ItemError as exc:
                 await services.mark_items(self.db, pack_id, [item["idx"]], "failed", str(exc))
                 continue
@@ -171,21 +192,54 @@ class TelegramPackBuilder:
             return [i for i, _ in batch[n + 1:]] + rest
         raise BuildFailed("create")
 
-    async def _retry(self, call):
-        """Повторяет вызов Telegram при retry_after и сетевых сбоях. Ошибки элемента/набора пробрасывает."""
-        from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
-
+    async def _retry(self, call, *, confirmed=None):
+        """После потери ответа сначала сверяем результат мутации, только потом повторяем её."""
         for attempt in range(1, NETWORK_RETRIES + 1):
             try:
-                return await call()
+                return await asyncio.wait_for(call(), REQUEST_TIMEOUT_S)
+            except SetLevelError as exc:
+                if exc.code == "set_exists" and confirmed is not None and await confirmed():
+                    return None
+                raise
             except TelegramRetryAfter as exc:
-                log.warning("Telegram просит подождать %s с", exc.retry_after)
-                await asyncio.sleep(exc.retry_after + 0.5)
-            except (TelegramNetworkError, TelegramServerError):
+                if exc.retry_after > MAX_FLOOD_WAIT_S or attempt == NETWORK_RETRIES:
+                    raise SetLevelError("telegram_busy") from exc
+                log.warning("Telegram просит подождать %s с (попытка %s/%s)", exc.retry_after, attempt, NETWORK_RETRIES)
+                await asyncio.sleep(exc.retry_after + 1.0)
+            except (TelegramNetworkError, TelegramServerError, TimeoutError, OSError):
+                # Ответ мог потеряться уже ПОСЛЕ создания/добавления. Без сверки нельзя
+                # ни создавать набор повторно, ни считать загруженный элемент неудачным.
+                if confirmed is not None and await confirmed():
+                    return None
                 if attempt == NETWORK_RETRIES:
                     raise
                 await asyncio.sleep(min(2 ** attempt, 20))
-        return await call()
+
+    async def _has_count(self, name: str, expected: int) -> bool:
+        count = await self._retry(lambda: self.publisher.count(name))
+        return count is not None and count >= expected
+
+    async def _finish_interrupted(self, pack_id: int, code: str) -> BuildResult:
+        """Возвращаем уже созданную часть вместо потери всего пака при сбое сети/таймауте."""
+        state = await services.build_state(self.db, pack_id)
+        if state is None:
+            raise BuildFailed(code)
+        pack, items = state
+        name = pack["set_name"]
+        if name:
+            try:
+                count = await asyncio.wait_for(self.publisher.count(name), RECONCILE_TIMEOUT_S)
+            except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter, TimeoutError, OSError, SetLevelError):
+                count = None  # Сохраняем хотя бы то, что уже подтверждено в нашей БД.
+            if count is not None:
+                added = sum(i["status"] == "added" for i in items)
+                pending = [i["idx"] for i in items if i["status"] == "pending"]
+                await services.mark_items(self.db, pack_id, pending[:max(0, count - added)], "added")
+        if not name or await self._added(pack_id) == 0:
+            raise BuildFailed(code)
+        await self._fail_rest(pack_id, code)
+        await services.refund_failed_items(self.db, pack_id)
+        return BuildResult(link=self.publisher.link(name, pack["type"]))
 
     async def _added(self, pack_id: int) -> int:
         row = await self.db.fetchone(

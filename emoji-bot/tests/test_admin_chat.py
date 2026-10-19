@@ -171,5 +171,27 @@ def test_api_respects_ban_maintenance_and_hidden_categories(tmp_path):
         c.portal.call(runtime.set_maintenance, ctx, False)
         c.portal.call(runtime.toggle_category, ctx, "flags")
         cats = c.get("/api/categories").json()
-        assert "flags" not in {x["id"] for x in cats["categories"]} and cats["total"] == 335
+        assert "flags" not in {x["id"] for x in cats["categories"]} and cats["total"] == 355  # 363 без 8 флагов
         assert c.get("/api/templates?category=flags").status_code == 404
+
+
+async def test_promo_constructor(env, db):
+    dp, bot, ctx, session = env
+    await dp.feed_update(bot, callback(ADMIN, "a:prn"))
+    await dp.feed_update(bot, callback(ADMIN, "a:prf:gens"))
+    await dp.feed_update(bot, message_update(ADMIN, text="5-8"))
+    await dp.feed_update(bot, callback(ADMIN, "a:prf:count"))
+    await dp.feed_update(bot, message_update(ADMIN, text="3"))
+    await dp.feed_update(bot, callback(ADMIN, "a:prt"))             # только новичкам
+    await dp.feed_update(bot, callback(ADMIN, "a:prok"))
+    rows = await db.fetchall("SELECT * FROM promos")
+    assert len(rows) == 3 and all(r["gens"] == 5 and r["gens_max"] == 8 and r["only_new"] == 1 for r in rows)
+    assert len({r["batch"] for r in rows}) == 1
+    assert session.sent("SendDocument")                               # пачка кодов — файлом
+    await dp.feed_update(bot, command(6, f"/promo {rows[0]['code']}"))
+    assert 6 <= (await services.get_user(db, 6))["balance"] <= 9
+    await dp.feed_update(bot, callback(ADMIN, f"a:prp:{rows[1]['code']}"))  # пауза
+    assert (await runtime.get_promo(db, rows[1]["code"]))["active"] == 0
+    await dp.feed_update(bot, command(7, "/promo"))                   # без кода — бот просит прислать его
+    await dp.feed_update(bot, message_update(7, text=rows[1]["code"]))
+    assert texts.PROMO_ASK in texts_sent(session) and texts.PROMO_ERRORS["paused"] in texts_sent(session)

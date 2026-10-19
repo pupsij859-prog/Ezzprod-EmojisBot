@@ -51,7 +51,8 @@ BURSTS = ("none", "sparks", "hearts", "confetti", "stars", "flash")
 
 # значения по умолчанию и допустимые диапазоны настроек эффектов: (по умолчанию, мин, макс)
 FX = {
-    "pixel": {"on": False, "grid": (32, 8, 64), "shape": "square", "fps": (15, 4, 30), "colors": (48, 2, 64),
+    # пределы мозаики — под бюджет сложности Telegram (COMPLEXITY): крупнее сетка и чаще кадры он не принимает
+    "pixel": {"on": False, "grid": (24, 8, 40), "shape": "square", "fps": (12, 4, 20), "colors": (48, 2, 64),
               "lines": (80, 0, 100), "gap": (14, 0, 35)},
     "metal": {"on": False, "width": (100, 20, 300)},
     "glitch": {"on": False, "count": (6, 1, 16), "len": (100, 20, 300), "shift": (100, 0, 300),
@@ -441,6 +442,9 @@ def parts(anim: dict, text: str = "") -> list[dict]:
         is_text = _has_slot(L)
         fill, stroke = lottie.main_colors(L)
         rgb = fill or stroke or [1, 1, 1]
+        if is_text:  # у надписи цвет — цвет букв (их заливки помечены «ezzprod color» и в main_colors не входят)
+            letter = next((f for f in lottie.text_fills(L) if lottie._solid(f) is not None), None)
+            rgb = lottie._solid(letter) if letter is not None else rgb
         kind = "text" if is_text else _kind(L)
         if is_text:
             name = f"«{text}»" if text else "надпись"
@@ -672,10 +676,16 @@ def _scale_opacity(ks: dict, k: float) -> None:
 
 def _edit_part(anim: dict, layers: list, L: dict, p: dict, amp: float) -> None:
     if p.get("fill"):
-        fill, stroke = lottie.main_colors(L)
-        src = fill or stroke
-        if src:
-            lottie._recolor(L, ("fl",) if fill else ("st",), src, lottie.hex_to_rgb(p["fill"]))
+        if _has_slot(L):  # надпись: красим буквы (обычная перекраска их пропускает), цвета логотипа не трогаем
+            rgb = lottie.hex_to_rgb(p["fill"])
+            for f in lottie.text_fills(L):
+                f["c"] = {"a": 0, "k": [*rgb, 1]}
+            lottie.drop_text_grads(L)  # градиент ника лежит поверх букв — без него виден выбранный цвет
+        else:
+            fill, stroke = lottie.main_colors(L)
+            src = fill or stroke
+            if src:
+                lottie._recolor(L, ("fl",) if fill else ("st",), src, lottie.hex_to_rgb(p["fill"]))
     if "o" in p and p["o"] != 100:
         _scale_opacity(L.setdefault("ks", {}), p["o"] / 100)
     x, y, s, r, preset = p.get("x", 0), p.get("y", 0), p.get("s", 100), p.get("r", 0), p.get("anim")
@@ -953,6 +963,9 @@ def _primitive_path(it: dict) -> dict | None:
             "i": z, "o": z}
 
 
+PIXEL_GRID_MIN = 8
+
+
 def _pixel(anim: dict, cfg: dict) -> None:
     """Пиксельная мозаика — см. app/pixel.py."""
     from .pixel import mosaic
@@ -1194,7 +1207,8 @@ def _glitch(anim: dict, cfg: dict, ghosts: bool = True) -> None:
 
 # ───────────────────────── применение ─────────────────────────
 
-def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = True, lite: int = 0) -> dict:
+def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = True, lite: int = 0,
+          grid: int | None = None) -> dict:
     """Применяет edit к анимации (на месте) и возвращает её. mark — подписать слои частей (id в SVG превью)."""
     edit = edit or {}
     index = _layer_index(anim)
@@ -1221,6 +1235,8 @@ def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = T
         cfg = fx["pixel"]
         if lite:  # реже кадры и меньше цветов — меньше переключений клеток
             cfg = {**cfg, "fps": min(cfg["fps"], 8 if lite == 1 else 5), "colors": min(cfg["colors"], 24 if lite == 1 else 12)}
+        if grid:  # сетка крупнее — меньше клеток (см. render: бюджет сложности Telegram)
+            cfg = {**cfg, "grid": min(cfg["grid"], grid)}
         _pixel(anim, cfg)
     if "holo" in fx:
         _holo(anim, fx["holo"], 6 if lite else 16, edge="pixel" not in fx and lite < 2, main_stroke=main_stroke)
@@ -1298,7 +1314,7 @@ def _text_px(anim: dict) -> float | None:
             sub = it.get("it") or []
             tr = next((i for i in sub if isinstance(i, dict) and i.get("ty") == "tr"), None)
             mm = _mul(m, _tr_matrix(tr, t))
-            if it.get("nm") == "ezz layer":
+            if it.get("nm") in (lottie.NICK_LAYER, lottie.LOGO_LAYER):
                 box = _bbox(_points(sub, mm, [], t))
                 if box:
                     best = max(best or 0, box[3] - box[1])
@@ -1344,6 +1360,7 @@ def check(anim: dict, data: bytes, base: dict | None = None) -> list[dict]:
     px = _text_px(anim)
     chat = px * 20 / (w or 512) if px else None
     bad = _forbidden(anim)
+    over = _overload(anim)
     kb = len(data) / 1024
     return [
         {"id": "weight", "label": "вес после сжатия", "value": f"{kb:.1f} кб / {TG_LIMIT // 1024}".replace(".", ","), "ok": len(data) <= TG_LIMIT},
@@ -1354,19 +1371,68 @@ def check(anim: dict, data: bytes, base: dict | None = None) -> list[dict]:
         {"id": "loop", "label": "петля", "value": "есть рывок" if jerk else "без рывков", "ok": not jerk},
         {"id": "nick", "label": "ник в чате, 20 px", "ok": chat is None or chat >= 4,
          "value": "нет ника" if chat is None else ("мелко" if chat < 4 else f"{chat:.1f} px".replace(".", ","))},
-        {"id": "tg", "label": "как в telegram", "value": "да", "ok": True},
+        {"id": "tg", "label": "сложность для telegram", "value": "в норме" if over <= 1 else f"×{over:.1f} от лимита".replace(".", ","),
+         "ok": over <= 1},
         {"id": "forbidden", "label": "запрещённое", "value": ", ".join(bad) if bad else "нет", "ok": not bad},
     ]
 
 
+# Кроме 64 КБ после сжатия Telegram отклоняет («wrong file type») слишком сложные анимации. Порог не описан;
+# подобран загрузкой пробных файлов (uploadStickerFile, 2026-10-17): проходили мозаики до ~23 тыс. объектов JSON,
+# ~3,2 тыс. фигур и ~10,6 тыс. ключевых кадров, а 37 тыс. / 4,3 тыс. / 19,5 тыс. — уже нет. Держимся в пределах прошедших.
+COMPLEXITY = {"objects": 23000, "shapes": 3200, "keyframes": 10500}
+
+
+def complexity(anim) -> dict[str, int]:
+    """Объекты JSON, фигуры и ключевые кадры анимации — то, по чему Telegram режет сложные стикеры."""
+    m = {"objects": 0, "shapes": 0, "keyframes": 0}
+    stack = [(anim, False)]
+    while stack:
+        o, in_shapes = stack.pop()
+        if isinstance(o, dict):
+            m["objects"] += 1
+            if in_shapes and isinstance(o.get("ty"), str):
+                m["shapes"] += 1
+            if o.get("a") == 1 and isinstance(o.get("k"), list):
+                m["keyframes"] += len(o["k"])
+            for k, v in o.items():
+                if isinstance(v, (dict, list)):
+                    stack.append((v, in_shapes or k in ("shapes", "it")))
+        elif isinstance(o, list):
+            stack.extend((v, in_shapes) for v in o if isinstance(v, (dict, list)))
+    return m
+
+
+def _overload(anim: dict) -> float:
+    """Во сколько раз анимация сложнее допустимого (≤ 1 — укладывается)."""
+    c = complexity(anim)
+    return max(c[k] / COMPLEXITY[k] for k in COMPLEXITY)
+
+
+def fits(anim: dict, data: bytes) -> bool:
+    return len(data) <= TG_LIMIT and _overload(anim) <= 1
+
+
 def render(anim: dict, edit: dict | None, *, mark: bool = False) -> tuple[dict, bytes]:
-    """Персонализированная анимация + правки → (анимация, байты .tgs). Подбирает упрощение под 64 КБ."""
-    out, data = anim, b""
+    """Персонализированная анимация + правки → (анимация, байты .tgs). Подбирает упрощение под требования Telegram:
+    64 КБ и бюджет сложности; мозаике, если не хватило облегчений, укрупняет сетку."""
+    out, data, opts = anim, b"", {}
     for opts in variants(edit):
         out = apply(copy.deepcopy(anim), edit, mark=mark, **opts)
         data = lottie.encode(out)
-        if len(data) <= TG_LIMIT:
-            break
+        if fits(out, data):
+            return out, data
+    pixel = ((edit or {}).get("fx") or {}).get("pixel")
+    if pixel:
+        grid = pixel["grid"]
+        for _ in range(4):
+            over = max(_overload(out), len(data) / TG_LIMIT)
+            # число клеток ~ квадрат сетки; берём с запасом и всегда хотя бы на шаг крупнее
+            grid = max(PIXEL_GRID_MIN, min(grid - 4, int(grid / math.sqrt(over) * 0.92)))
+            out = apply(copy.deepcopy(anim), edit, mark=mark, **{**opts, "grid": grid})
+            data = lottie.encode(out)
+            if fits(out, data) or grid == PIXEL_GRID_MIN:
+                break
     return out, data
 
 

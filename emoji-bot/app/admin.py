@@ -182,7 +182,7 @@ async def notify_refunded(ctx: Context, user_id: int, qty: int) -> None:
     from .bot.texts import refund_user_notice  # пакет бота тянет хендлеры, а они — этот модуль
 
     try:
-        await ctx.bot.send_message(user_id, refund_user_notice(qty))
+        await ctx.bot.send_message(user_id, refund_user_notice(qty), parse_mode="HTML")
     except Exception:
         log.warning("не удалось уведомить пользователя %s о возврате", user_id)
 

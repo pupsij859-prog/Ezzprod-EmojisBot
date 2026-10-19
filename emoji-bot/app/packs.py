@@ -21,11 +21,13 @@ from typing import Protocol
 from . import services
 from .config import Settings
 from .db import Database
-from .notify import Notifier
+from .notify import Notifier, reward_sender
 
 log = logging.getLogger("ezzprod.packs")
 
 FINISH_RETRIES = 5
+RUN_TIMEOUT_S = 1200.0  # включая очередь и ожидание Telegram flood wait
+NOTIFY_TIMEOUT_S = 15.0
 
 
 @dataclass
@@ -83,6 +85,9 @@ class PackRunner:
         def done(t: asyncio.Task) -> None:
             self._tasks.discard(t)
             self._running.discard(pack_id)
+            if not t.cancelled() and t.exception() is not None:
+                log.error("фоновая задача пака %s завершилась с ошибкой; сторож повторит её", pack_id,
+                          exc_info=t.exception())
 
         task.add_done_callback(done)
 
@@ -106,12 +111,14 @@ class PackRunner:
     async def _run(self, pack_id: int, duration_s: float) -> None:
         # 1) сборка: её сбой — единственная причина вернуть генерации
         try:
-            result = await self.builder.build(pack_id, duration_s)
+            async with asyncio.timeout(RUN_TIMEOUT_S):
+                result = await self.builder.build(pack_id, duration_s)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.exception("сборка пака %s не удалась, возвращаем генерации", pack_id)
-            user_id = await services.fail_pack_with_error(self.db, pack_id, getattr(exc, "code", "build_failed"))
+            code = "build_timeout" if isinstance(exc, TimeoutError) else getattr(exc, "code", "build_failed")
+            user_id = await services.fail_pack_with_error(self.db, pack_id, code)
             if user_id is not None:
                 await self._safe(self.notifier.pack_failed, user_id, pack_id)
             return
@@ -131,12 +138,12 @@ class PackRunner:
             return
         await self._safe(self.notifier.pack_ready, finished.user_id, finished.pack)
         if finished.reward_user_id:
-            await self._safe(self.notifier.referral_reward, finished.reward_user_id, finished.reward_amount)
+            await self._safe(reward_sender(self.notifier, finished.reward_kind), finished.reward_user_id, finished.reward_amount)
 
     @staticmethod
     async def _safe(fn, *args) -> None:
         try:
-            await fn(*args)
+            await asyncio.wait_for(fn(*args), NOTIFY_TIMEOUT_S)
         except Exception:
             log.exception("не удалось отправить уведомление")
 

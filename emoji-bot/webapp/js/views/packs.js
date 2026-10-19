@@ -3,9 +3,10 @@
 import { api, previewUrl } from '../api.js';
 import { Button, Chips, ErrorState, SectionHead, Skeleton, Topbar } from '../components.js';
 import { goTab } from '../router.js';
-import { haptic } from '../tg.js';
-import { emojiWord, h, icon, sleep } from '../ui.js';
+import { confirmAction, haptic } from '../tg.js';
+import { emojiWord, h, icon, sleep, toast } from '../ui.js';
 import { openPackChat, userChatPack } from './chat.js';
+import { openPackDetails } from './pack_details.js';
 
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 
@@ -14,9 +15,9 @@ function dateLabel(ts) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
 
-function MyPackRow(pack) {
+function MyPackRow(pack, onDelete) {
   const thumbs = h('div', { class: 'pack__thumbs', 'aria-hidden': 'true' },
-    pack.preview.slice(0, 4).map((id) => h('img', { src: previewUrl(id), alt: '', loading: 'lazy', decoding: 'async' })));
+    (pack.items || pack.preview).slice(0, 4).map((id) => h('img', { src: previewUrl(id), alt: '', loading: 'lazy', decoding: 'async' })));
   const kind = pack.type === 'sticker' ? 'стикеры' : 'эмодзи';
   let status;
   if (pack.status === 'processing') {
@@ -28,9 +29,29 @@ function MyPackRow(pack) {
     status = icon('chev-right', 'pcard__chev');
   }
   const ready = pack.status === 'ready';
-  return h(ready ? 'button' : 'div', {
-    class: `pack pack--${pack.status}`, type: ready ? 'button' : undefined, dataset: { type: pack.type },
-    onclick: ready ? () => { haptic.tap(); openPackChat(userChatPack(pack)); } : undefined,
+
+  const delBtn = pack.status !== 'processing' && onDelete
+    ? h('button', {
+      class: 'pack__del',
+      type: 'button',
+      'aria-label': `удалить пак ${pack.title}`,
+      onclick: async (e) => {
+        e.stopPropagation();
+        haptic.select();
+        const ok = await confirmAction(`Удалить «${pack.title}» из списка?`);
+        if (!ok) return;
+        onDelete(pack);
+      },
+    }, icon('trash'))
+    : null;
+
+  const main = h('button', {
+    class: 'pack__main',
+    type: 'button',
+    onclick: () => {
+      haptic.tap();
+      openPackDetails(pack, { onDelete: () => onDelete && onDelete(pack) });
+    },
   },
   thumbs,
   h('div', { class: 'pack__info' },
@@ -38,6 +59,8 @@ function MyPackRow(pack) {
     h('p', { class: 'pack__meta' }, `${kind} · ${emojiWord(pack.count, pack.type)} · ${dateLabel(pack.created_at)}`),
     pack.status === 'processing' ? h('p', { class: 'pack__status' }, 'собирается…') : null),
   status);
+
+  return h('div', { class: `pack pack--${pack.status}`, dataset: { type: pack.type } }, main, delBtn);
 }
 
 export function mountPacks(container) {
@@ -59,6 +82,18 @@ export function mountPacks(container) {
     SectionHead('Паки'),
     h('div', { class: 'page' }, chips.el, mineTitle, mineBox)));
 
+  async function handleDelete(pack) {
+    try {
+      await api.deletePack(pack.id);
+      haptic.success();
+      toast('Пак удалён');
+      await loadMine();
+    } catch {
+      haptic.error();
+      toast('Не удалось удалить пак', 'warn');
+    }
+  }
+
   async function loadMine() {
     try {
       const { packs } = await api.packs();
@@ -68,7 +103,7 @@ export function mountPacks(container) {
           h('p', null, 'Своих паков пока нет. Выбери шаблоны на главной и собери первый'),
           Button({ label: 'К шаблонам', full: false, onClick: () => goTab('home') })));
       } else {
-        mineBox.replaceChildren(h('div', { class: 'packs' }, ...packs.map(MyPackRow)));
+        mineBox.replaceChildren(h('div', { class: 'packs' }, ...packs.map((p) => MyPackRow(p, handleDelete))));
       }
       applyFilter();
       if (packs.some((p) => p.status === 'processing')) {

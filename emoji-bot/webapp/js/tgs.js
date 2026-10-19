@@ -13,6 +13,7 @@ const TEXT_FIT_W = 0.86;
 const TEXT_FIT_H = 0.78;
 const TEXT_WITH_LOGO = 0.72; // рядом с логотипом
 const SIZE_RANGE = [0.4, 1.6]; // «размер надписи» пользователя (как в app/lottie.py)
+const PLACE_RANGE = { x: 100, y: 100, r: 180 }; // сдвиг надписи, % ширины места надписи; поворот, °
 const TOL = 0.06; // допуск, чтобы оттенок считался тем же основным цветом (RGB 0..1), как в app/lottie.py
 
 function shrink([x0, y0, x1, y1], k) {
@@ -126,21 +127,156 @@ const fill = (rgb) => ({ ty: 'fl', nm: SLOT, c: { a: 0, k: [rgb[0], rgb[1], rgb[
 const transform = () => ({ ty: 'tr', p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] },
   r: { a: 0, k: 0 }, o: { a: 0, k: 100 }, sk: { a: 0, k: 0 }, sa: { a: 0, k: 0 } });
 
-function place(drawing, box, textRgb) {
+// ── градиент на ник, логотип и/или заливку — порт градиента из app/lottie.py (clean_grad, _grad_*)
+const GRAD_NAME = 'ezz grad';
+const GRAD_TARGETS = ['text', 'logo', 'fill'];
+const HEX6 = /^#[0-9a-f]{6}$/i;
+
+/** Градиент из настроек {a, b, angle, on} → чистое значение или null (выключен), как clean_grad. */
+export function cleanGrad(g) {
+  if (!g || typeof g !== 'object' || !HEX6.test(g.a) || !HEX6.test(g.b) || !Array.isArray(g.on)) return null;
+  const on = GRAD_TARGETS.filter((t) => g.on.includes(t));
+  if (!on.length) return null;
+  const angle = Number.isFinite(Number(g.angle)) ? ((Math.round(Number(g.angle)) % 360) + 360) % 360 : 180;
+  return { a: g.a.toLowerCase(), b: g.b.toLowerCase(), angle, on };
+}
+
+function gradPoints([x0, y0, x1, y1], angle) {
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hw = (x1 - x0) / 2, hh = (y1 - y0) / 2;
+  const rad = (angle * Math.PI) / 180;
+  const dx = Math.sin(rad), dy = -Math.cos(rad);
+  const half = Math.abs(hw * dx) + Math.abs(hh * dy) || 1;
+  return [[cx - dx * half, cy - dy * half], [cx + dx * half, cy + dy * half]];
+}
+
+const r3 = (n) => Math.round(n * 1000) / 1000;
+function gradPaint(a, b, s, e) {
+  return { ty: 'gf', nm: GRAD_NAME, o: { a: 0, k: 100 }, r: 1, bm: 0, t: 1,
+    s: { a: 0, k: [r2(s[0]), r2(s[1])] }, e: { a: 0, k: [r2(e[0]), r2(e[1])] },
+    g: { p: 2, k: { a: 0, k: [0, ...a.slice(0, 3).map(r3), 1, ...b.slice(0, 3).map(r3)] } } };
+}
+
+function shade(rgb, t) {
+  const [k, to] = t >= 0.5 ? [Math.min(0.8, (t - 0.5) * 1.6), 1] : [Math.min(0.6, (0.5 - t) * 1.2), 0];
+  return rgb.slice(0, 3).map((c) => c + (to - c) * k);
+}
+
+function gradFill(grad, box, tone = null) {
+  let a = hexToRgb(grad.a), b = hexToRgb(grad.b);
+  if (tone != null) { a = shade(a, tone); b = shade(b, tone); }
+  const [s, e] = gradPoints(box, grad.angle);
+  return gradPaint(a, b, s, e);
+}
+
+const luma = (rgb) => 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+
+// тон цветных слоёв логотипа: яркость, растянутая на 0…1 среди слоёв (один тон — 0.5), как _logo_shades
+function logoShades(drawing) {
+  const lum = new Map();
+  drawing.layers.forEach((layer, n) => { if (layer.color) lum.set(n, luma(layer.color.map((c) => c / 255))); });
+  if (!lum.size) return lum;
+  const vals = [...lum.values()];
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  lum.forEach((v, n) => lum.set(n, hi - lo < 0.08 ? 0.5 : (v - lo) / (hi - lo)));
+  return lum;
+}
+
+// точка из пространства родителя в локальное пространство группы (обратное matrix)
+function inversePoint(tr, x, y) {
+  if (!tr) return [x, y];
+  const [ax, ay] = [...staticValue(tr.a, [0, 0]), 0, 0];
+  const [px, py] = [...staticValue(tr.p, [0, 0]), 0, 0];
+  const [sx, sy] = [...staticValue(tr.s, [100, 100]), 100, 100];
+  if (!sx || !sy) return null;
+  const r = ((staticValue(tr.r, 0) || 0) * Math.PI) / 180;
+  const cos = Math.cos(r), sin = Math.sin(r);
+  const X = x - px, Y = y - py;
+  return [((X * cos + Y * sin) * 100) / sx + ax, ((-X * sin + Y * cos) * 100) / sy + ay];
+}
+
+// родные буквы «ezzprod»: один градиент на слово, пересчитанный в пространство каждой буквы
+function gradLetters(group, grad) {
+  const box = lettersBox(group);
+  if (!box) return;
+  const [s, e] = gradPoints(box, grad.angle);
+  const a = hexToRgb(grad.a), b = hexToRgb(grad.b);
+  group.it.filter(isLetter).forEach((letter) => {
+    const tr = letter.it.find((i) => i.ty === 'tr');
+    const ls = inversePoint(tr, s[0], s[1]), le = inversePoint(tr, e[0], e[1]);
+    if (!ls || !le) return;
+    const n = letter.it.findIndex((i) => i.ty === 'fl' && i.nm === SLOT);
+    hide(letter.it[n]);
+    letter.it.splice(n, 0, gradPaint(a, b, ls, le));
+  });
+}
+
+// сплошная заливка под градиентом — прозрачная, иначе её край светится каймой (как _hide в app/lottie.py)
+const hide = (paint) => { paint.o = { a: 0, k: 0 }; };
+
+function points(items, f, out) {
+  for (const i of items) {
+    if (!i || typeof i !== 'object') continue;
+    if (i.ty === 'gr') {
+      const sub = i.it || [];
+      const m = matrix(sub.find((j) => j && j.ty === 'tr'));
+      points(sub.filter((j) => !(j && j.ty === 'tr')), (x, y) => f(...m(x, y)), out);
+    } else if (i.ty === 'sh') {
+      let shape = staticValue(i.ks, null);
+      if (Array.isArray(shape)) shape = shape[0];
+      ((shape && shape.v) || []).forEach((v) => out.push(f(v[0], v[1])));
+    }
+  }
+  return out;
+}
+
+// основная заливка стикера (цвет src) → градиент по габаритам каждой фигуры этого цвета
+function gradBody(anim, src, grad) {
+  const visit = (o) => {
+    if (Array.isArray(o)) { o.forEach(visit); return; }
+    if (!o || typeof o !== 'object') return;
+    const items = o.ty === 'gr' ? o.it : (o.ty === 4 ? o.shapes : null);
+    if (Array.isArray(items) && !items.some(isLetter)) {
+      items.forEach((i, n) => {
+        if (!i || i.ty !== 'fl' || i.nm === SLOT) return;
+        const rgb = solid(i);
+        if (!rgb || !near(rgb, src)) return;
+        const pts = points(items, (x, y) => [x, y], []);
+        if (!pts.length) return;
+        let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+        pts.forEach(([x, y]) => { bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x); by1 = Math.max(by1, y); });
+        const paint = gradFill(grad, [bx0, by0, bx1, by1]);
+        if (i.o) paint.o = i.o;
+        items[n] = paint;
+      });
+    }
+    for (const k in o) if (o[k] && typeof o[k] === 'object') visit(o[k]);
+  };
+  visit(anim);
+}
+
+function placeDrawing(drawing, box, textRgb, grad = null) {
   const [x0, y0, x1, y1] = drawing.bbox;
   const bw = Math.max(x1 - x0, 1e-6), bh = Math.max(y1 - y0, 1e-6);
   const [tx0, ty0, tx1, ty1] = box;
   const k = Math.min((tx1 - tx0) / bw, (ty1 - ty0) / bh);
   const ox = (tx0 + tx1) / 2 - (x0 + bw / 2) * k;
   const oy = (ty0 + ty1) / 2 - (y0 + bh / 2) * k;
-  const groups = drawing.layers.map((layer) => {
+  const fitted = [x0 * k + ox, y0 * k + oy, x1 * k + ox, y1 * k + oy]; // где рисунок оказался: по нему идёт градиент
+  const on = grad ? grad.on : [];
+  const tones = on.includes('logo') ? logoShades(drawing) : new Map();
+  const groups = drawing.layers.map((layer, n) => {
     const rgb = layer.color ? layer.color.map((c) => c / 255) : textRgb;
     const items = layer.paths.map((p) => ({ ty: 'sh', ks: { a: 0, k: {
       v: p.v.map(([x, y]) => [r2(x * k + ox), r2(y * k + oy)]),
       i: p.i.map(([a, b]) => [r2(a * k), r2(b * k)]),
       o: p.o.map(([a, b]) => [r2(a * k), r2(b * k)]),
       c: true } } }));
-    return { ty: 'gr', nm: 'ezz layer', it: [...items, fill(rgb), transform()] };
+    const paints = [fill(rgb)];
+    if (layer.color && on.includes('logo')) paints.unshift(gradFill(grad, fitted, tones.has(n) ? tones.get(n) : 0.5));
+    else if (!layer.color && on.includes('text')) paints.unshift(gradFill(grad, fitted)); // поверх заливки ника
+    if (paints.length > 1) hide(paints[1]);
+    // как в app/lottie.py: ник — «ezz nick», цветной слой логотипа — «ezz layer»
+    return { ty: 'gr', nm: layer.color ? 'ezz layer' : 'ezz nick', it: [...items, ...paints, transform()] };
   });
   return groups.reverse(); // в Lottie первый элемент группы рисуется поверх остальных
 }
@@ -151,6 +287,32 @@ export function textSize(value) {
   return Math.max(SIZE_RANGE[0], Math.min(SIZE_RANGE[1], k));
 }
 
+/** «Положение надписи» {x, y, r} → чистое значение или null (как clean_place в app/lottie.py). */
+export function cleanPlace(p) {
+  if (!p || typeof p !== 'object') return null;
+  const out = {};
+  for (const [k, lim] of Object.entries(PLACE_RANGE)) {
+    const v = Number(p[k]);
+    out[k] = Number.isFinite(v) ? Math.max(-lim, Math.min(lim, Math.round(v))) : 0;
+  }
+  return out.x || out.y || out.r ? out : null;
+}
+
+// надпись со сдвигом (доли ширины места надписи), масштабом и поворотом вокруг центра — одной группой, как _moved в app/lottie.py
+function moved(items, box, place, size = 1) {
+  const hasPlace = place && (place.x || place.y || place.r);
+  const hasSize = size != null && Math.abs(size - 1) > 1e-4;
+  if ((!hasPlace && !hasSize) || !items.length) return items;
+  const [x0, y0, x1, y1] = box;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, w = x1 - x0;
+  const tr = transform();
+  tr.a.k = [r2(cx), r2(cy)];
+  tr.p.k = [r2(cx + (w * ((place && place.x) || 0)) / 100), r2(cy + (w * ((place && place.y) || 0)) / 100)];
+  tr.r.k = (place && place.r) || 0;
+  tr.s.k = [r2(100 * (size || 1)), r2(100 * (size || 1))];
+  return [{ ty: 'gr', nm: 'ezz text', it: [...items, tr] }];
+}
+
 function layout(box, text, logo, size = 1) {
   const [x0, y0, x1, y1] = box;
   const w = x1 - x0, hh = y1 - y0, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
@@ -159,7 +321,7 @@ function layout(box, text, logo, size = 1) {
     return [[logo, [x0, cy - lh / 2, x1, cy + lh / 2]]];
   }
   if (text && !logo) {
-    const hw = (w * TEXT_FIT_W * size) / 2, hhh = (hh * TEXT_FIT_H * size) / 2;
+    const hw = (w * TEXT_FIT_W) / 2, hhh = (hh * TEXT_FIT_H) / 2;
     return [[text, [cx - hw, cy - hhh, cx + hw, cy + hhh]]];
   }
   const side = Math.min(hh * LOGO_HEIGHT * 0.8, w * 0.42);
@@ -169,7 +331,7 @@ function layout(box, text, logo, size = 1) {
   const left = cx - (side + hh * GAP + tw) / 2;
   return [
     [logo, [left, cy - side / 2, left + side, cy + side / 2]],
-    [text, shrink([left + side + hh * GAP, y0, left + side + hh * GAP + tw, y1], TEXT_WITH_LOGO * size)],
+    [text, shrink([left + side + hh * GAP, y0, left + side + hh * GAP + tw, y1], TEXT_WITH_LOGO)],
   ];
 }
 
@@ -252,13 +414,15 @@ function recolor(anim, kinds, src, dst) {
 
 /** Копия анимации: основной цвет стикера (color — «Заливка», null — родной), контуры и надпись
  *  (stroke — «Обводка», null — родные), ник и/или логотип вместо «ezzprod». */
-export function personalize(anim, { color = null, stroke = null, text = null, logo = null, size = 1 } = {}) {
+export function personalize(anim, { color = null, stroke = null, text = null, logo = null, size = 1, place = null, grad = null } = {}) {
   const out = structuredClone(anim);
-  if (color || stroke) {
+  const on = grad ? grad.on : [];
+  if (color || stroke || on.includes('fill')) {
     const [mainFill, mainStroke] = mainColors(out);
     if (color && mainFill) recolor(out, ['fl'], mainFill, color);
     // «Обводка» — контуры и всё того же цвета, нарисованное заливкой (буквы «TOP», руки, блики)
     if (stroke && mainStroke) recolor(out, ['st', 'fl'], mainStroke, stroke);
+    if (on.includes('fill') && mainFill) gradBody(out, color || mainFill, grad);
   }
   const groups = wordGroups(out);
   const textRgb = stroke || slotColor(groups) || [1, 1, 1]; // надпись красится вместе с обводкой
@@ -269,11 +433,19 @@ export function personalize(anim, { color = null, stroke = null, text = null, lo
           if (i.ty === 'fl' && i.nm === SLOT) i.c = { a: 0, k: [...textRgb, 1] };
         }));
       }
+      if (on.includes('text')) gradLetters(group, grad);
+      const hasTransform = (place && (place.x || place.y || place.r)) || (size != null && Math.abs(size - 1) > 1e-4);
+      if (!hasTransform) continue;
+      const box = lettersBox(group);
+      if (!box) continue;
+      const drawn = moved(group.it.filter(isLetter), box, place, size);
+      const rest = group.it.filter((i) => !isLetter(i));
+      group.it = [...rest.filter((i) => i.ty !== 'tr'), ...drawn, ...rest.filter((i) => i.ty === 'tr')];
       continue;
     }
     const box = lettersBox(group);
     if (!box) continue;
-    const drawn = layout(box, text, logo, size).flatMap(([d, a]) => place(d, a, textRgb));
+    const drawn = moved(layout(box, text, logo).flatMap(([d, a]) => placeDrawing(d, a, textRgb, grad)), box, place, size);
     const rest = group.it.filter((i) => !isLetter(i));
     group.it = [...rest.filter((i) => i.ty !== 'tr'), ...drawn, ...rest.filter((i) => i.ty === 'tr')];
   }
@@ -307,11 +479,15 @@ export function lookOf(id) {
   return lookFromParams(lookFor(id), true);
 }
 
-async function lookFromParams(p, own) {
-  const text = await textDrawing(p.text, p.font ? p.font.id : null).catch(() => null);
+export async function lookFromParams(p, own) {
+  const fontId = p.font ? p.font.id : null;
+  // шрифт мог быть удалён (свой) — тогда ник в превью рисуем стандартным, а не пропускаем
+  const text = await textDrawing(p.text, fontId).catch(() => (fontId ? textDrawing(p.text, null) : null)).catch(() => null);
   const logo = p.logo && p.logo.vector ? p.logo.vector : null;
   return {
     text, logo, color: own ? hexToRgb(p.color) : null, stroke: own ? hexToRgb(p.stroke) : null, size: textSize(p.size),
+    place: cleanPlace(p.place),
+    grad: own ? cleanGrad(p.grad) : null,
     // у стикера с правками редактора превью рисует сервер (тем же кодом, что собирает пак)
     remote: own && p.edit ? renderParams(p) : null,
   };
@@ -321,7 +497,7 @@ async function lookFromParams(p, own) {
 export function renderParams(p) {
   return {
     text: (p.text || '').trim(), logo_id: p.logo ? p.logo.id : null, color: p.color || null, stroke: p.stroke || null,
-    size: p.size == null ? 100 : p.size, font_id: p.font ? p.font.id : null, edit: p.edit || null,
+    size: p.size == null ? 100 : p.size, place: cleanPlace(p.place), grad: cleanGrad(p.grad), font_id: p.font ? p.font.id : null, edit: p.edit || null,
   };
 }
 
@@ -338,7 +514,8 @@ export function renderRemote(id, params) {
   return rendered.get(key);
 }
 
-export const isPersonalized = () => Boolean((state.text || '').trim() || (state.logo && state.logo.vector) || state.color || state.stroke);
+export const isPersonalized = () => Boolean((state.text || '').trim() || (state.logo && state.logo.vector) || state.color || state.stroke
+  || cleanGrad(state.grad));
 
 // ── проигрыватель: элемент с картинкой-заглушкой, поверх которой появляется анимация
 const players = new Set();

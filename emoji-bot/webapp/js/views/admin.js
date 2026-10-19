@@ -97,10 +97,15 @@ function PagedList({ load, renderItem, empty }) {
 
 // ───────────────────────── платежи ─────────────────────────
 
+// сумма платежа в его валюте: Stars или рубли (криптооплата CryptoBot / xRocket)
+const money = (p, cls = 'stars') => (p.currency && p.currency !== 'XTR'
+  ? h('span', { class: cls }, `${num(p.amount)} ${p.currency === 'RUB' ? '₽' : p.currency}`)
+  : h('span', { class: cls }, num(p.amount), icon('star-fill', 'stars__icon')));
+
 function PaymentRow(p, onChanged) {
   return h('button', { class: 'arow', type: 'button', onclick: () => { haptic.tap(); openPayment(p, onChanged); } },
     h('span', { class: 'arow__main' },
-      h('b', null, `#${p.id} · ${date(p.created_at)} · `, h('span', { class: 'stars' }, num(p.amount), icon('star-fill', 'stars__icon'))),
+      h('b', null, `#${p.id} · ${date(p.created_at)} · `, money(p)),
       h('span', null, `${who(p.user)}${p.qty ? ` · ${gens(p.qty)}` : ''}`)),
     Status(PAY_STATUS[p.status] || [p.status, 'muted']));
 }
@@ -109,7 +114,8 @@ function openPayment(p, onChanged) {
   openOverlay({
     kind: 'sheet', label: 'платёж', className: 'sheet--admin',
     render: ({ close }) => {
-      const canRefund = p.status === 'credited' || p.status === 'credited_repeat';
+      // криптоплатёж автоматически не вернуть: деньги в кошельке, возврат — вручную
+      const canRefund = (p.status === 'credited' || p.status === 'credited_repeat') && ['stars', 'dev'].includes(p.provider);
       const refund = Button({ label: 'Вернуть Stars', variant: 'secondary', onClick: async () => {
         if (!(await confirmAction(`Вернуть ${p.amount} Stars пользователю ${who(p.user)}? С баланса снимется ${gens(p.qty || 0)}.`))) return;
         setBusy(refund, true, 'Возвращаем…');
@@ -135,7 +141,7 @@ function openPayment(p, onChanged) {
         h('div', { class: 'sheet__body' },
           Group(
             Row({ label: 'Статус', value: Status(PAY_STATUS[p.status] || [p.status, 'muted']), chevron: false }),
-            Row({ label: 'Сумма', value: h('span', { class: 'row__value stars' }, num(p.amount), icon('star-fill', 'stars__icon')) }),
+            Row({ label: 'Сумма', value: money(p, 'row__value stars') }),
             Row({ label: 'Генераций', value: p.qty ? String(p.qty) : '—' }),
             Row({ label: 'Пользователь', sub: `id ${p.user.id}`, value: who(p.user) }),
             Row({ label: 'Дата', value: dateTime(p.created_at) }),

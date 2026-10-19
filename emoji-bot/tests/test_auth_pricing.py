@@ -45,14 +45,14 @@ def test_start_param_is_whitelisted():
 
 
 def test_pricing_tiers(tmp_path):
-    s = make_settings(tmp_path)  # 6 ⭐ база, −10% от 30, 5 ⭐ от 50
+    s = make_settings(tmp_path)  # 2.625 курс (в 2.1x дешевле), −10% от 30, от 50 опт
     assert pricing.quote(s, 1).total == 5
     assert pricing.quote(s, 20).total == 100
     assert pricing.quote(s, 30).total == 135          # 150 − 10%
     assert pricing.quote(s, 50).total == 200          # по 4 ₽
     assert pricing.quote(s, 50).discount_pct == 20
-    assert pricing.quote(s, 20).stars == 80           # 100 ₽ / 1,25
-    assert pricing.quote(s, 1).stars == 4             # 5 ₽ / 1,25
+    assert pricing.quote(s, 20).stars == 39           # 100 ₽ / 2.625 -> ceil(38.095) = 39
+    assert pricing.quote(s, 1).stars == 2             # 5 ₽ / 2.625 -> ceil(1.904) = 2
     with pytest.raises(ValueError):
         pricing.quote(s, 0)
 
@@ -70,8 +70,10 @@ def test_pricing_table_matches_quote(tmp_path):
     s = make_settings(tmp_path)
     table = pricing.pricing_table(s)
     assert len(table["totals"]) == s.max_buy_qty + 1
+    assert len(table["stars_totals"]) == s.max_buy_qty + 1
     for qty in (1, 7, 29, 30, 49, 50, 123, s.max_buy_qty):
         assert table["totals"][qty] == pricing.quote(s, qty).total
+        assert table["stars_totals"][qty] == pricing.quote(s, qty).stars
 
 
 def test_dev_mode_refuses_public_url(tmp_path):

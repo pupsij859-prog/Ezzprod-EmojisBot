@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import dataclasses
 import datetime
 import html
 import io
@@ -32,8 +33,9 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-from .. import admin, catalog, runtime, services
+from .. import admin, catalog, partners, runtime, services, subscription
 from ..context import Context
+from . import texts
 
 log = logging.getLogger("ezzprod.admin_chat")
 
@@ -59,9 +61,15 @@ class St(StatesGroup):
     message = State()
     setting = State()
     promo = State()
+    promo_field = State()
     broadcast = State()
     bc_button = State()
     add_admin = State()
+    custom_text = State()
+    custom_button_text = State()
+    custom_button_emoji = State()
+    link = State()
+    link_field = State()
 
 
 # ───────────────────────── мелочи ─────────────────────────
@@ -186,9 +194,12 @@ async def home(event, ctx: Context, state: FSMContext | None = None) -> None:
         [btn("📊 Статистика", "a:st:1"), btn("💰 Продажи", "a:py:all:0")],
         [btn("👤 Найти пользователя", "a:u"), btn("🎁 Выдать генерации", "a:gv", style="success")],
         [btn(f"📦 Паки ({processing} в работе)" if processing else "📦 Паки", "a:pk:all:0"), btn("🎟 Промокоды", "a:pr")],
-        [btn("💲 Цены и лимиты", "a:set"), btn("📢 Рассылка", "a:bc")],
+        [btn("🔗 Партнёрские ссылки", "a:lk")],
+        [btn("💲 Цены и лимиты", "a:set"), btn("💬 Тексты сообщений", "a:msgs")],
+        [btn("🔘 Кнопки в чате", "a:btns"), btn("🔒 Обязательная подписка", "a:sub")],
         [btn("🧩 Шаблоны", "a:tp"), btn("👑 Админы", "a:ad")],
-        [btn("🖥 Сервер", "a:sy"), btn("💾 Бэкап", "a:bk"), btn("📥 Экспорт", "a:ex")],
+        [btn("📢 Рассылка", "a:bc"), btn("🖥 Сервер", "a:sy")],
+        [btn("💾 Бэкап", "a:bk"), btn("📥 Экспорт", "a:ex")],
         [btn("🔧 Техработы: " + ("ВКЛ" if ctx.maintenance else "выкл"), "a:mt", style="danger" if ctx.maintenance else None),
          btn("❓ Помощь", "a:help")],
         [btn("🔄 Обновить", "a", style="success"), btn("✕ Закрыть", "a:x")],
@@ -235,7 +246,8 @@ async def cb_help(call: CallbackQuery) -> None:
         "начислить/списать, Pro, бан, написать от бота.\n"
         "🎁 <b>Выдать генерации</b> — быстро: <code>ID количество</code>.\n"
         "📦 <b>Паки</b> — лента сборок, ошибки, дособрать зависший.\n"
-        "🎟 <b>Промокоды</b> — коды на генерации; пользователь вводит <code>/promo КОД</code>.\n"
+        "🎟 <b>Промокоды</b> — конструктор: свой или случайный код, фиксированная или случайная награда, "
+        "число активаций, срок, «только новичкам», пачка кодов файлом. Активация: <code>/promo КОД</code> или в профиле Mini App.\n"
         "💲 <b>Цены и лимиты</b> — цена, скидки, подарки, рефералка, лимиты пака, оплата. Меняется сразу, без перезапуска.\n"
         "📢 <b>Рассылка</b> — любое сообщение (текст, фото, видео) всем или части пользователей, с кнопкой.\n"
         "🧩 <b>Шаблоны</b> — скрыть/показать категорию, перечитать папку templates/.\n"
@@ -460,6 +472,11 @@ async def user_card(event, ctx: Context, uid: int, note: str = "") -> None:
         f"🎨 Паков: {packs} · элементов {items}\n"
         f"🤝 Пригласил: {invited}" + (f" · пришёл от <code>{u['referred_by']}</code>" if u["referred_by"] else "")
     )
+    if "partner" in u.keys() and u["partner"]:
+        text += f"\n🔗 Пришёл по партнёрской ссылке <code>{esc(u['partner'])}</code>"
+    owned = await partners.owned_by(ctx.db, uid)
+    if owned:
+        text += "\n🔗 Партнёр: " + ", ".join(f"<code>{esc(r['code'])}</code>" for r in owned)
     if note:
         text += f"\n\n{note}"
     await show(event, text, kb(
@@ -592,7 +609,7 @@ async def cb_user_payments(call: CallbackQuery, ctx: Context) -> None:
 
 
 REASONS = {"signup": "подарок новичку", "purchase": "покупка", "pack": "пак", "refund": "возврат", "admin": "админ",
-           "referral": "за друга", "promo": "промокод", "pack_refund": "возврат за пак", "refund_revert": "отмена возврата"}
+           "referral": "за друга", "partner": "партнёру за приведённого", "partner_bonus": "бонус по ссылке", "promo": "промокод", "pack_refund": "возврат за пак", "refund_revert": "отмена возврата"}
 
 
 @router.callback_query(F.data.startswith("a:ul:"))
@@ -712,6 +729,41 @@ async def cb_pack_resume(call: CallbackQuery, ctx: Context) -> None:
 
 # ───────────────────────── настройки ─────────────────────────
 
+@router.callback_query(F.data.in_({"a:sub", "a:sg:subscription"}))
+async def cb_subscription(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    s = ctx.settings
+    rows = [[btn(f"{t.label}: {runtime.show_value(t, getattr(s, t.key))}", f"a:se:{t.key}")]
+            for t in runtime.TUNABLES if t.group == "subscription"]
+    rows += [[btn(texts.MSG_DEFS[key].title, f"a:msg:{key}")] for key in texts.MSG_DEFS if key.startswith("subscription")]
+    rows += [
+        [btn(f"🔘 Кнопка «{texts.BTN_DEFS['sub_join'].title}»", "a:btn:sub_join")],
+        [btn(f"🔘 Кнопка «{texts.BTN_DEFS['sub_check'].title}»", "a:btn:sub_check")],
+    ]
+    rows += [[btn("👁 Предпросмотр", "a:subp")], [back()]]
+    await show(call,
+               "🔒 <b>Обязательная подписка</b>\n\n"
+               f"Статус: <b>{'включена' if s.subscription_required else 'выключена'}</b>\n\n"
+               "1. Добавь бота администратором канала.\n"
+               "2. Укажи @username канала или ID -100… для закрытого.\n"
+               "3. Для закрытого канала укажи пригласительную ссылку.\n"
+               "4. Настрой текст и включи требование подписки.\n\n"
+               "До подписки пользователь видит сообщение и две кнопки: канал и проверка. "
+               "Админы и поддержка доступны всегда. Изменения сохраняются без перезапуска.", kb(*rows))
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:subp")
+async def cb_subscription_preview(call: CallbackQuery, ctx: Context) -> None:
+    from .handlers import send_html, subscription_keyboard
+
+    if not subscription.channel_url(ctx.settings):
+        await call.answer("Сначала укажи канал и ссылку на него", show_alert=True)
+        return
+    await call.answer()
+    await send_html(call.message, subscription.payload(ctx)["message"], reply_markup=subscription_keyboard(ctx))
+
+
 @router.callback_query(F.data == "a:set")
 async def cb_settings(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
     await state.clear()
@@ -809,8 +861,14 @@ async def cb_setting_edit(call: CallbackQuery, state: FSMContext) -> None:
     t = runtime.BY_KEY[key]
     await state.set_state(St.setting)
     await state.update_data(key=key)
-    hint = {"str": "Пришли @username или «-», чтобы убрать.", "float": "Пришли число, например 1.25"}.get(
-        t.kind, f"Пришли число от {t.lo} до {t.hi}.")
+    hint = {
+        "channel": "Пришли @username канала, https://t.me/username или ID -100…; «-» — очистить.",
+        "telegram_url": "Пришли https://t.me/username или пригласительную ссылку https://t.me/+…; «-» — очистить.",
+        "str": "Пришли @username или «-», чтобы убрать.",
+        "float": "Пришли число, например 1.25",
+        "token": "Пришли API токен / ключ или «-», чтобы очистить.",
+        "str_any": "Пришли значение (например, mainnet или testnet) или «-», чтобы очистить.",
+    }.get(t.kind, f"Пришли число от {t.lo} до {t.hi}.")
     await show(call, f"✏️ <b>{esc(t.label)}</b>\n\n{hint}", cancel(f"a:se:{key}"))
     await call.answer()
 
@@ -831,49 +889,313 @@ async def msg_setting(message: Message, ctx: Context, state: FSMContext) -> None
 
 # ───────────────────────── промокоды ─────────────────────────
 
+PROMO_ICON = {"active": "✅", "paused": "⏸", "expired": "⌛", "exhausted": "⛔"}
+PROMO_STATE = {"active": "действует", "paused": "на паузе", "expired": "срок вышел", "exhausted": "активации закончились"}
+PROMO_PAGE = 8
+
+# поле конструктора → (подсказка для ввода, разбор ответа)
+PROMO_FIELDS = {
+    "code": "🔤 Пришли свой код (латиница, цифры, _ и -, 3–32 символа).\n«-» — случайный код.",
+    "prefix": "🏷 Приставка случайного кода, например <code>EZZ</code> → <code>EZZ7K2QX9M</code>.\n«-» — без приставки.",
+    "gens": "🎁 Сколько генераций даёт код:\n• <code>10</code> — ровно 10\n• <code>5-20</code> — случайно от 5 до 20 каждому\n• <code>0</code> — без генераций (только скидка)",
+    "discount": "🏷 Процент скидки на покупки (от 1 до 99):\n• <code>20</code> — скидка 20%\n• <code>0</code> или <code>-</code> — без скидки.",
+    "uses": "👥 Сколько раз можно активировать каждый код (каждый человек — один раз), например <code>100</code>.",
+    "days": "⏳ Сколько дней действует код, например <code>7</code>.\n<code>0</code> — бессрочно.",
+    "count": "📦 Сколько разных кодов создать за раз (1–500). Больше одного — пришлю их файлом.",
+}
+
+
+def _draft(data: dict) -> runtime.PromoDraft:
+    raw = data.get("draft") or {}
+    return runtime.PromoDraft(**{k: v for k, v in raw.items() if k in runtime.PromoDraft.__dataclass_fields__})
+
+
+async def _save_draft(state: FSMContext, draft: runtime.PromoDraft) -> None:
+    await state.update_data(draft=dataclasses.asdict(draft))
+
+
+def _until(ts) -> str:
+    return datetime.datetime.fromtimestamp(int(ts)).strftime("%d.%m.%Y %H:%M") if ts else "бессрочно"
+
+
+def _promo_line(r) -> str:
+    st = runtime.promo_state(r)
+    parts = []
+    if r["gens"]:
+        parts.append(f"+{r['gens']}–{r['gens_max']}" if r["gens_max"] else f"+{r['gens']}")
+    if "discount_pct" in r.keys() and r["discount_pct"]:
+        parts.append(f"−{r['discount_pct']}%")
+    reward = " · ".join(parts) or "0"
+    extra = " · 🆕" if r["only_new"] else ""
+    return f"{PROMO_ICON[st]} <code>{esc(r['code'])}</code> · {reward} · {r['uses']}/{r['uses_max']}{extra}"
+
+
 @router.callback_query(F.data == "a:pr")
 async def cb_promos(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
     await state.clear()
-    await promos_screen(call, ctx)
+    await promos_screen(call, ctx, 0)
     await call.answer()
 
 
-async def promos_screen(call: CallbackQuery, ctx: Context) -> None:
-    rows = await runtime.list_promos(ctx.db)
-    lines = [f"{'✅' if r['uses'] < r['uses_max'] else '⛔'} <code>{esc(r['code'])}</code> · +{r['gens']} ген. · "
-             f"{r['uses']}/{r['uses_max']}" for r in rows]
-    buttons = [btn(f"🗑 {r['code']}", f"a:prx:{r['code']}") for r in rows[:10]]
-    await show(call, "🎟 <b>Промокоды</b>\nПользователь активирует: <code>/promo КОД</code>\n\n"
-                     + ("\n".join(lines) or "Пока нет ни одного."),
-               kb([btn("➕ Создать", "a:prn", style="success")], buttons[:2], buttons[2:4], buttons[4:6],
-                  buttons[6:8], buttons[8:10], [back()]))
+@router.callback_query(F.data.startswith("a:prl:"))
+async def cb_promos_page(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await promos_screen(call, ctx, int(call.data.split(":")[2] or 0))
+    await call.answer()
+
+
+async def promos_screen(call: CallbackQuery, ctx: Context, offset: int = 0) -> None:
+    rows = await runtime.list_promos(ctx.db, offset, PROMO_PAGE + 1)
+    more = len(rows) > PROMO_PAGE
+    rows = rows[:PROMO_PAGE]
+    total = await n(ctx, "SELECT COUNT(*) FROM promos")
+    used = await n(ctx, "SELECT COUNT(*) FROM promo_uses")
+    given = await n(ctx, "SELECT COALESCE(SUM(delta),0) FROM ledger WHERE reason='promo'")
+    text = ("🎟 <b>Промокоды</b>\n"
+            f"Кодов: <b>{total}</b> · активаций: <b>{used}</b> · выдано генераций: <b>{given}</b>\n"
+            "Пользователь активирует: <code>/promo КОД</code> или в профиле Mini App.\n\n"
+            + ("\n".join(_promo_line(r) for r in rows) or "Пока нет ни одного."))
+    buttons = [btn(f"{PROMO_ICON[runtime.promo_state(r)]} {r['code']}", f"a:prc:{r['code']}") for r in rows]
+    nav = [btn("←", f"a:prl:{max(0, offset - PROMO_PAGE)}") if offset else None,
+           btn("→", f"a:prl:{offset + PROMO_PAGE}") if more else None]
+    await show(call, text, kb([btn("➕ Создать промокод", "a:prn", style="success")],
+                              *[buttons[i:i + 2] for i in range(0, len(buttons), 2)], nav, [back()]))
+
+
+def _draft_text(d: runtime.PromoDraft, note: str = "") -> str:
+    code = f"<code>{esc(d.code)}</code>" if d.code else ("случайный" + (f", приставка <code>{esc(d.prefix)}</code>" if d.prefix else ""))
+    return ((f"{note}\n\n" if note else "")
+            + "➕ <b>Новый промокод</b>\n\n"
+            f"🔤 Код: <b>{code}</b>\n"
+            f"🎁 Награда: <b>{d.reward_text()}</b>\n"
+            f"🏷 Скидка на покупки: <b>{f'{d.discount_pct}%' if d.discount_pct else 'нет'}</b>\n"
+            f"👥 Активаций на код: <b>{d.uses}</b>\n"
+            f"⏳ Срок: <b>{f'{d.days} дн.' if d.days else 'бессрочно'}</b>\n"
+            f"🆕 Кому: <b>{'только новичкам (без покупок)' if d.only_new else 'всем'}</b>\n"
+            f"📦 Кодов за раз: <b>{d.count}</b>\n\n"
+            "Нажми на параметр, чтобы поменять. Быстрый способ — одной строкой: "
+            "<code>КОД ГЕНЕРАЦИЙ АКТИВАЦИЙ</code> (например <code>EZZ10 10 100</code>) "
+            "или со скидкой: <code>КОД СКИДКА% АКТИВАЦИЙ</code> (например <code>SALE20 20% 100</code>).")
+
+
+def _draft_markup(d: runtime.PromoDraft) -> InlineKeyboardMarkup:
+    return kb(
+        [btn("🔤 Код", "a:prf:code"), btn("🏷 Приставка", "a:prf:prefix")],
+        [btn("🎁 Генерации", "a:prf:gens"), btn(f"🏷 Скидка: {d.discount_pct}%" if d.discount_pct else "🏷 Скидка: нет", "a:prf:discount")],
+        [btn("👥 Активации", "a:prf:uses"), btn("⏳ Срок", "a:prf:days")],
+        [btn("📦 Сколько кодов", "a:prf:count"), btn("🆕 Только новичкам: " + ("да" if d.only_new else "нет"), "a:prt")],
+        [btn("✅ Создать", "a:prok", style="success")],
+        [btn("✕ Отмена", "a:pr")],
+    )
+
+
+async def draft_screen(event, state: FSMContext, note: str = "") -> None:
+    d = _draft(await state.get_data())
+    await state.set_state(St.promo)
+    await show(event, _draft_text(d, note), _draft_markup(d))
 
 
 @router.callback_query(F.data == "a:prn")
 async def cb_promo_new(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(St.promo)
-    await show(call, "➕ Пришли <code>КОД ГЕНЕРАЦИЙ АКТИВАЦИЙ</code>\n"
-                     "Например: <code>EZZ10 10 100</code> — 10 генераций, 100 человек.\n"
-                     "Вместо кода «-» — придумаю сам.", cancel("a:pr"))
+    await state.clear()
+    await _save_draft(state, runtime.PromoDraft())
+    await draft_screen(call, state)
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:prf:"))
+async def cb_promo_field(call: CallbackQuery, state: FSMContext) -> None:
+    key = call.data.split(":")[2]
+    if key not in PROMO_FIELDS:
+        await call.answer()
+        return
+    await state.update_data(field=key)
+    await state.set_state(St.promo_field)
+    await show(call, PROMO_FIELDS[key], kb([btn("← К промокоду", "a:prb")]))
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:prb")
+async def cb_promo_back(call: CallbackQuery, state: FSMContext) -> None:
+    if "draft" not in await state.get_data():
+        await _save_draft(state, runtime.PromoDraft())
+    await draft_screen(call, state)
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:prt")
+async def cb_promo_toggle_new(call: CallbackQuery, state: FSMContext) -> None:
+    d = _draft(await state.get_data())
+    d.only_new = not d.only_new
+    await _save_draft(state, d)
+    await draft_screen(call, state)
+    await call.answer()
+
+
+def _apply_field(d: runtime.PromoDraft, key: str, raw: str) -> None:
+    raw = raw.strip()
+    if key in ("code", "prefix"):
+        value = "" if raw == "-" else runtime.clean_code(raw)
+        setattr(d, key, value)
+        if key == "code" and value:
+            d.count = 1
+        return
+    if key == "discount":
+        val_str = raw.rstrip("%").strip()
+        if val_str in ("-", "0"):
+            d.discount_pct = 0
+            return
+        if not val_str.isdigit():
+            raise ValueError("нужно число процентов (1-99) или 0")
+        val = int(val_str)
+        if not 1 <= val <= 99:
+            raise ValueError("скидка от 1 до 99%")
+        d.discount_pct = val
+        if d.gens == 5 and d.gens_max == 0:
+            d.gens = 0
+        return
+    if key == "gens":
+        if raw in ("0", "-"):
+            d.gens, d.gens_max = 0, 0
+            return
+        lo, sep, hi = raw.replace("–", "-").replace(" ", "").partition("-")
+        if not lo.isdigit() or (sep and not hi.isdigit()):
+            raise ValueError("нужно число (10) или диапазон (5-20), либо 0")
+        d.gens, d.gens_max = int(lo), (int(hi) if sep else 0)
+        if d.gens_max and d.gens_max <= d.gens:
+            raise ValueError("в диапазоне «от» должно быть меньше «до»")
+        return
+    if not raw.isdigit():
+        raise ValueError("нужно целое число")
+    setattr(d, key, int(raw))
+    if key == "count" and d.count > 1:
+        d.code = ""
+
+
+@router.message(St.promo_field, F.text)
+async def msg_promo_field(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    d = _draft(data)
+    key = data.get("field", "")
+    try:
+        _apply_field(d, key, message.text)
+        d.check()
+    except ValueError as exc:
+        await message.answer(f"❌ {exc}", reply_markup=kb([btn("← К промокоду", "a:prb")]))
+        return
+    await _save_draft(state, d)
+    await draft_screen(message, state, "✅ Сохранено")
 
 
 @router.message(St.promo, F.text)
 async def msg_promo(message: Message, ctx: Context, state: FSMContext) -> None:
+    """Быстрое создание одной строкой: КОД ГЕНЕРАЦИЙ АКТИВАЦИЙ или КОД СКИДКА% АКТИВАЦИЙ."""
     parts = message.text.split()
-    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
-        await message.answer("Формат: КОД ГЕНЕРАЦИЙ АКТИВАЦИЙ, например EZZ10 10 100", reply_markup=cancel("a:pr"))
-        return
+    if len(parts) == 3 and parts[2].isdigit():
+        code_str = None if parts[0] == "-" else parts[0]
+        uses_count = int(parts[2])
+        p1 = parts[1].strip()
+        try:
+            if p1.endswith("%") and p1[:-1].isdigit():
+                disc = int(p1[:-1])
+                code = await runtime.create_promo(ctx.db, code_str, 0, uses_count, message.from_user.id, discount_pct=disc)
+                await state.clear()
+                await message.answer(f"✅ Промокод <code>{esc(code)}</code> создан: скидка {disc}%, {uses_count} активаций.\n"
+                                     f"Активация: <code>/promo {esc(code)}</code>", parse_mode="HTML",
+                                     reply_markup=kb([btn("🎟 Открыть", f"a:prc:{code}"), back("a:pr", "← Промокоды")]))
+                return
+            elif p1.isdigit():
+                code = await runtime.create_promo(ctx.db, code_str, int(p1), uses_count, message.from_user.id)
+                await state.clear()
+                await message.answer(f"✅ Промокод <code>{esc(code)}</code> создан: +{p1} генераций, {uses_count} активаций.\n"
+                                     f"Активация: <code>/promo {esc(code)}</code>", parse_mode="HTML",
+                                     reply_markup=kb([btn("🎟 Открыть", f"a:prc:{code}"), back("a:pr", "← Промокоды")]))
+                return
+        except ValueError as exc:
+            await message.answer(f"❌ {exc}", reply_markup=kb([btn("← К промокоду", "a:prb")]))
+            return
+    await message.answer("Формат: КОД ГЕНЕРАЦИЙ АКТИВАЦИЙ (например EZZ10 10 100) или со скидкой (SALE20 20% 100). Или настрой кнопками выше.",
+                         reply_markup=kb([btn("← К промокоду", "a:prb")]))
+
+
+@router.callback_query(F.data == "a:prok")
+async def cb_promo_create(call: CallbackQuery, ctx: Context, state: FSMContext, bot: Bot) -> None:
+    d = _draft(await state.get_data())
     try:
-        code = await runtime.create_promo(ctx.db, None if parts[0] == "-" else parts[0], int(parts[1]), int(parts[2]),
-                                          message.from_user.id)
+        codes = await runtime.create_promos(ctx.db, d, call.from_user.id)
     except ValueError as exc:
-        await message.answer(f"❌ {exc}", reply_markup=cancel("a:pr"))
+        await call.answer(f"❌ {exc}", show_alert=True)
         return
     await state.clear()
-    await message.answer(f"✅ Промокод <code>{esc(code)}</code> создан: +{parts[1]} генераций, {parts[2]} активаций.\n"
-                         f"Активация: <code>/promo {esc(code)}</code>", parse_mode="HTML",
-                         reply_markup=kb([back("a:pr", "← Промокоды")]))
+    summary = (f"{d.reward_text()} · {d.uses} активаций"
+               + (f" · {d.days} дн." if d.days else "") + (" · только новичкам" if d.only_new else ""))
+    if len(codes) == 1:
+        await show(call, f"✅ Промокод <code>{esc(codes[0])}</code> создан\n{summary}\n\n"
+                         f"Активация: <code>/promo {esc(codes[0])}</code> или в профиле Mini App.",
+                   kb([btn("🎟 Открыть", f"a:prc:{codes[0]}"), back("a:pr", "← Промокоды")]))
+    else:
+        data = "\n".join(codes).encode()
+        await bot.send_document(call.from_user.id, BufferedInputFile(data, filename=f"promo-{len(codes)}.txt"),
+                                caption=f"📦 {len(codes)} промокодов: {summary}")
+        await show(call, f"✅ Создано кодов: <b>{len(codes)}</b>\n{summary}\n\nСписок — файлом выше. Первые:\n"
+                         + "\n".join(f"<code>{esc(c)}</code>" for c in codes[:10]),
+                   kb([back("a:pr", "← Промокоды")]))
+    await call.answer("Готово")
+
+
+async def promo_card(call: CallbackQuery, ctx: Context, code: str, note: str = "") -> None:
+    r = await runtime.get_promo(ctx.db, code)
+    if r is None:
+        await promos_screen(call, ctx)
+        return
+    st = runtime.promo_state(r)
+    reward_parts = []
+    if r["gens"]:
+        reward_parts.append(f"{r['gens']}–{r['gens_max']} (случайно)" if r["gens_max"] else f"{r['gens']} генераций")
+    if "discount_pct" in r.keys() and r["discount_pct"]:
+        reward_parts.append(f"скидка {r['discount_pct']}%")
+    reward = " + ".join(reward_parts) or "0 генераций"
+    given = await n(ctx, "SELECT COALESCE(SUM(gens),0) FROM promo_uses WHERE code=?", (code,))
+    users = await runtime.promo_users(ctx.db, code)
+    lines = [f"• {who(u, u['user_id'])}"
+             f" · +{u['gens'] or '?'} · {dt(u['created_at'])}" for u in users]
+    text = ((f"{note}\n\n" if note else "")
+            + f"🎟 <code>{esc(r['code'])}</code> — {PROMO_ICON[st]} {PROMO_STATE[st]}\n\n"
+            f"🎁 Награда: <b>{reward}</b>\n"
+            f"👥 Активации: <b>{r['uses']}/{r['uses_max']}</b> · выдано генераций: <b>{given}</b>\n"
+            f"⏳ Действует до: <b>{_until(r['expires_at'])}</b>\n"
+            f"🆕 Кому: <b>{'только новичкам' if r['only_new'] else 'всем'}</b>\n"
+            f"🗓 Создан: {dt(r['created_at'])}" + (f" · пачка <code>{esc(r['batch'])}</code>" if r["batch"] else "")
+            + ("\n\n<b>Последние активации:</b>\n" + "\n".join(lines) if lines else ""))
+    await show(call, text, kb(
+        [btn("▶️ Включить" if not r["active"] else "⏸ На паузу", f"a:prp:{code}"),
+         btn("🗑 Удалить", f"a:prz:{code}", style="danger")],
+        [back("a:pr", "← Промокоды")]))
+
+
+@router.callback_query(F.data.startswith("a:prc:"))
+async def cb_promo_card(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await promo_card(call, ctx, call.data.split(":", 2)[2])
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:prp:"))
+async def cb_promo_pause(call: CallbackQuery, ctx: Context) -> None:
+    code = call.data.split(":", 2)[2]
+    r = await runtime.get_promo(ctx.db, code)
+    if r is not None:
+        await runtime.set_promo_active(ctx.db, code, not r["active"])
+    await promo_card(call, ctx, code)
+    await call.answer("Включён" if r is not None and not r["active"] else "На паузе")
+
+
+@router.callback_query(F.data.startswith("a:prz:"))  # не a:prd: — это префикс возврата платежа
+async def cb_promo_delete_ask(call: CallbackQuery) -> None:
+    code = call.data.split(":", 2)[2]
+    await show(call, f"🗑 Удалить промокод <code>{esc(code)}</code>? Уже начисленные генерации останутся у людей.",
+               kb([btn("🗑 Да, удалить", f"a:prx:{code}", style="danger"), btn("Отмена", f"a:prc:{code}")]))
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith("a:prx:"))
@@ -882,6 +1204,354 @@ async def cb_promo_delete(call: CallbackQuery, ctx: Context, state: FSMContext) 
     await runtime.delete_promo(ctx.db, call.data.split(":", 2)[2])
     await promos_screen(call, ctx)
     await call.answer("Удалён")
+
+
+# ───────────────────────── партнёрские ссылки (app/partners.py) ─────────────────────────
+
+LINK_ICON = {"active": "🟢", "paused": "⏸", "expired": "⌛"}
+LINK_STATE = {"active": "работает", "paused": "на паузе", "expired": "срок вышел"}
+LINK_PAGE = 8
+LINK_FIELDS = {
+    "name": "📝 <b>Название</b> — для тебя, например <code>Вася · TikTok</code>.",
+    "code": ("🔤 <b>Код в ссылке</b>: латиница, цифры и _, от 3 до 32 символов, например <code>vasya</code> → "
+             "ссылка <code>?start=p_vasya</code>.\n<code>-</code> — случайный код."),
+    "owner": ("👤 <b>Партнёр</b> — кто получает награду: ID, @ник или перешли его сообщение. Он должен хотя бы раз "
+              "запустить бота.\n<code>-</code> — без партнёра (только бонус новичкам и статистика)."),
+    "bonus": "🎁 <b>Бонус новичку</b>: сколько генераций получает новый пользователь по ссылке (сверх обычного подарка).\n<code>0</code> — без бонуса.",
+    "reward": "💎 <b>Награда партнёру</b>: сколько генераций за каждого приведённого.\n<code>0</code> — без награды.",
+    "cap": "🔢 <b>Лимит наград партнёру</b>: сколько человек максимум оплатить.\n<code>0</code> — без лимита.",
+    "uses": ("👥 <b>Лимит бонусов новичкам</b>: сколько первых новичков получат бонус. Статистика считается по всем.\n"
+             "<code>0</code> — без лимита."),
+    "days": "⏳ <b>Срок</b>: сколько дней с создания действуют бонус и награда (статистика копится и потом).\n<code>0</code> — бессрочно.",
+}
+REWARD_ORDER = ("signup", "pack", "purchase")
+
+
+def _link_draft(data: dict) -> partners.Draft:
+    raw = data.get("link_draft") or {}
+    return partners.Draft(**{k: v for k, v in raw.items() if k in partners.Draft.__dataclass_fields__})
+
+
+async def _save_link_draft(state: FSMContext, d: partners.Draft) -> None:
+    await state.update_data(link_draft=dataclasses.asdict(d))
+
+
+def _pct(a: int, b: int) -> str:
+    return f"{round(a * 100 / b)}%" if b else "—"
+
+
+def _rub(n) -> str:
+    return f"{int(n or 0):,}".replace(",", " ") + " ₽"
+
+
+async def links_screen(call: CallbackQuery, ctx: Context, offset: int = 0) -> None:
+    rows = await partners.list_links(ctx.db, offset, LINK_PAGE + 1)
+    more = len(rows) > LINK_PAGE
+    rows = rows[:LINK_PAGE]
+    total = await n(ctx, "SELECT COUNT(*) FROM partner_links")
+    joined = await n(ctx, "SELECT COUNT(*) FROM users WHERE partner IS NOT NULL")
+    joined_day = await n(ctx, "SELECT COUNT(*) FROM users WHERE partner IS NOT NULL AND created_at>=?", (services.now() - DAY,))
+    given = await n(ctx, "SELECT COALESCE(SUM(delta),0) FROM ledger WHERE reason IN ('partner','partner_bonus')")
+    lines = [f"{LINK_ICON[partners.state(r)]} <b>{esc(r['name'])}</b> · <code>{r['code']}</code> · "
+             f"👆{r['clicks']} · 👥{r['joined']}" for r in rows]
+    text = ("🔗 <b>Партнёрские ссылки</b>\n"
+            "Для рекламы у блогеров и в каналах: у каждой ссылки свой бонус новичкам, награда партнёру и статистика. "
+            "Партнёр видит свою статистику командой /partner.\n\n"
+            f"Ссылок: <b>{total}</b> · пришло людей: <b>{joined}</b> (за сутки +{joined_day}) · выдано генераций: <b>{given}</b>\n\n"
+            + ("\n".join(lines) or "Пока ни одной — создай первую."))
+    buttons = [btn(f"{LINK_ICON[partners.state(r)]} {r['name'][:24]}", f"a:lkc:{r['code']}") for r in rows]
+    nav = [btn("←", f"a:lkl:{max(0, offset - LINK_PAGE)}") if offset else None,
+           btn("→", f"a:lkl:{offset + LINK_PAGE}") if more else None]
+    await show(call, text, kb([btn("➕ Создать ссылку", "a:lkn", style="success")],
+                              *[buttons[i:i + 2] for i in range(0, len(buttons), 2)], nav, [back()]))
+
+
+@router.callback_query(F.data == "a:lk")
+async def cb_links(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await links_screen(call, ctx)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:lkl:"))
+async def cb_links_page(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await links_screen(call, ctx, int(call.data.split(":")[2] or 0))
+    await call.answer()
+
+
+async def _owner_text(ctx: Context, owner_id: int) -> str:
+    if not owner_id:
+        return "нет"
+    return who(await services.get_user(ctx.db, owner_id), owner_id)
+
+
+async def link_draft_screen(event, ctx: Context, state: FSMContext, note: str = "") -> None:
+    data = await state.get_data()
+    d = _link_draft(data)
+    editing = data.get("link_edit")
+    await state.set_state(St.link)
+    code = f"<code>{esc(d.code)}</code>" if d.code else "случайный"
+    reward = (f"+{d.reward} {partners.REWARD_ON[d.reward_on]}" + (f", не больше {d.reward_cap} раз" if d.reward_cap else "")
+              if d.reward else "нет")
+    text = ((f"{note}\n\n" if note else "")
+            + (f"✏️ <b>Ссылка <code>{esc(editing)}</code></b>\n\n" if editing else "➕ <b>Новая партнёрская ссылка</b>\n\n")
+            + f"📝 Название: <b>{esc(d.name) or '— не задано —'}</b>\n"
+            + ("" if editing else f"🔤 Код: <b>{code}</b>\n")
+            + f"👤 Партнёр: <b>{await _owner_text(ctx, d.owner_id)}</b>\n"
+            f"🎁 Бонус новичку: <b>{f'+{d.bonus_new}' if d.bonus_new else 'нет'}</b>"
+            + (f" (первым {d.uses_max})" if d.bonus_new and d.uses_max else "") + "\n"
+            f"💎 Награда партнёру: <b>{reward}</b>\n"
+            f"⏳ Срок: <b>{f'{d.days} дн.' if d.days else 'бессрочно'}</b>\n\n"
+            "Нажми на параметр, чтобы поменять. Быстро: пришли одной строкой "
+            "<code>НАЗВАНИЕ</code> — создам ссылку без бонусов, только со статистикой.\n"
+            "💡 Награду надёжнее давать «за первый пак» или «за покупку»: регистрации легко накрутить фейками.")
+    markup = kb(
+        [btn("📝 Название", "a:lkf:name"), None if editing else btn("🔤 Код", "a:lkf:code")],
+        [btn("👤 Партнёр", "a:lkf:owner"), btn("🎁 Бонус новичку", "a:lkf:bonus")],
+        [btn("💎 Награда партнёру", "a:lkf:reward"), btn(f"⚡ Условие: {partners.REWARD_ON[d.reward_on]}", "a:lkt")],
+        [btn("🔢 Лимит наград", "a:lkf:cap"), btn("👥 Лимит бонусов", "a:lkf:uses")],
+        [btn("⏳ Срок", "a:lkf:days")],
+        [btn("✅ Сохранить" if editing else "✅ Создать", "a:lkok", style="success")],
+        [btn("✕ Отмена", f"a:lkc:{editing}" if editing else "a:lk")],
+    )
+    await show(event, text, markup)
+
+
+@router.callback_query(F.data == "a:lkn")
+async def cb_link_new(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await _save_link_draft(state, partners.Draft())
+    await link_draft_screen(call, ctx, state)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:lke:"))
+async def cb_link_edit(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    code = call.data.split(":", 2)[2]
+    r = await partners.get(ctx.db, code)
+    if r is None:
+        await links_screen(call, ctx)
+        return await call.answer("Ссылки уже нет")
+    await state.clear()
+    await state.update_data(link_edit=code)
+    await _save_link_draft(state, partners.Draft.from_row(r))
+    await link_draft_screen(call, ctx, state)
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:lkb")
+async def cb_link_back(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    if "link_draft" not in await state.get_data():
+        await _save_link_draft(state, partners.Draft())
+    await link_draft_screen(call, ctx, state)
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:lkt")
+async def cb_link_reward_on(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    d = _link_draft(await state.get_data())
+    d.reward_on = REWARD_ORDER[(REWARD_ORDER.index(d.reward_on) + 1) % len(REWARD_ORDER)]
+    await _save_link_draft(state, d)
+    await link_draft_screen(call, ctx, state)
+    await call.answer(partners.REWARD_ON[d.reward_on])
+
+
+@router.callback_query(F.data.startswith("a:lkf:"))
+async def cb_link_field(call: CallbackQuery, state: FSMContext) -> None:
+    key = call.data.split(":")[2]
+    if key not in LINK_FIELDS:
+        return await call.answer()
+    await state.update_data(link_field=key)
+    await state.set_state(St.link_field)
+    await show(call, LINK_FIELDS[key], kb([btn("← К ссылке", "a:lkb")]))
+    await call.answer()
+
+
+@router.message(St.link_field)
+async def msg_link_field(message: Message, ctx: Context, state: FSMContext) -> None:
+    data = await state.get_data()
+    d = _link_draft(data)
+    key = data.get("link_field", "")
+    raw = (message.text or "").strip()
+    back_kb = kb([btn("← К ссылке", "a:lkb")])
+    try:
+        if key == "name":
+            if not raw or len(raw) > 64:
+                raise ValueError("название от 1 до 64 символов")
+            d.name = raw
+        elif key == "code":
+            d.code = "" if raw == "-" else partners.clean_code(raw)
+        elif key == "owner":
+            if raw == "-":
+                d.owner_id = 0
+            else:
+                found = await _resolve(ctx, message, None if getattr(message, "forward_origin", None) else raw)
+                if len(found) != 1:
+                    raise ValueError("не нашёл одного пользователя: пришли ID, @ник или перешли его сообщение "
+                                     "(он должен хотя бы раз запустить бота)")
+                d.owner_id = found[0]["id"]
+        else:
+            if not raw.isdigit():
+                raise ValueError("нужно целое число")
+            setattr(d, {"bonus": "bonus_new", "reward": "reward", "cap": "reward_cap", "uses": "uses_max",
+                        "days": "days"}[key], int(raw))
+        d.check(final=False)
+    except (ValueError, KeyError) as exc:
+        await message.answer(f"❌ {esc(str(exc))}", parse_mode="HTML", reply_markup=back_kb)
+        return
+    await _save_link_draft(state, d)
+    await link_draft_screen(message, ctx, state, "✅ Сохранено")
+
+
+@router.message(St.link, F.text)
+async def msg_link_quick(message: Message, ctx: Context, state: FSMContext) -> None:
+    """Быстрое создание: одна строка — название, без бонусов (только статистика)."""
+    if (await state.get_data()).get("link_edit"):
+        await message.answer("Чтобы поменять параметр, нажми на него кнопкой выше.", reply_markup=kb([btn("← К ссылке", "a:lkb")]))
+        return
+    d = _link_draft(await state.get_data())
+    d.name = message.text.strip()[:64]
+    await _save_link_draft(state, d)
+    await _link_save(message, ctx, state, message.from_user.id)
+
+
+async def _link_save(event, ctx: Context, state: FSMContext, admin_id: int) -> bool:
+    data = await state.get_data()
+    d = _link_draft(data)
+    editing = data.get("link_edit")
+    try:
+        if editing:
+            await partners.update(ctx.db, editing, d)
+            code = editing
+        else:
+            code = await partners.create(ctx.db, d, admin_id)
+    except ValueError as exc:
+        await link_draft_screen(event, ctx, state, f"❌ {esc(str(exc))}")
+        return False
+    await state.clear()
+    await link_card(event, ctx, code, "✅ Сохранено" if editing else "✅ Ссылка создана — отправь её партнёру")
+    return True
+
+
+@router.callback_query(F.data == "a:lkok")
+async def cb_link_save(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    ok = await _link_save(call, ctx, state, call.from_user.id)
+    await call.answer("Готово" if ok else "")
+
+
+def _days_line(by_day: dict) -> str:
+    today = services.now() // DAY
+    names = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+    parts = []
+    for d in range(today - 6, today + 1):
+        wd = datetime.datetime.fromtimestamp(d * DAY + DAY // 2).weekday()
+        parts.append(f"{names[wd]} {by_day.get(d, 0)}")
+    return " · ".join(parts)
+
+
+async def link_card(event, ctx: Context, code: str, note: str = "") -> None:
+    r = await partners.get(ctx.db, code)
+    if r is None:
+        if isinstance(event, CallbackQuery):
+            await links_screen(event, ctx)
+        return
+    st = await partners.stats(ctx.db, code)
+    stt = partners.state(r)
+    bot_link, app_link = partners.links(ctx.bot_username, code)
+    reward = (f"+{r['reward']} {partners.REWARD_ON[r['reward_on']]}" + (f", лимит {r['reward_cap']}" if r["reward_cap"] else "")
+              if r["reward"] else "нет")
+    bonus = (f"+{r['bonus_new']}" + (f", первым {r['uses_max']}" if r["uses_max"] else "")) if r["bonus_new"] else "нет"
+    j = st["joined"]
+    text = ((f"{note}\n\n" if note else "")
+            + f"🔗 <b>{esc(r['name'])}</b> — {LINK_ICON[stt]} {LINK_STATE[stt]}\n"
+            + (f"<code>{bot_link}</code>\nсразу в Mini App: <code>{app_link}</code>\n\n" if bot_link
+               else "⚠️ имя бота неизвестно — ссылка появится после подключения к Telegram\n\n")
+            + f"👤 Партнёр: {await _owner_text(ctx, r['owner_id'] or 0)}\n"
+            f"🎁 Бонус новичку: <b>{bonus}</b> · 💎 партнёру: <b>{reward}</b>\n"
+            f"⏳ До: <b>{_until(r['expires_at'])}</b> · создана {dt(r['created_at'])}\n\n"
+            "📊 <b>Статистика</b>\n"
+            f"👆 Переходов: <b>{r['clicks']}</b>\n"
+            f"👥 Новых пользователей: <b>{j}</b> ({_pct(j, r['clicks'])} от переходов) · сутки +{st['joined_day']} · неделя +{st['joined_week']}\n"
+            f"🎨 Сделали пак: <b>{st['active']}</b> ({_pct(st['active'], j)}) · паков {st['packs']}\n"
+            f"💳 Купили: <b>{st['buyers']}</b> ({_pct(st['buyers'], j)}) · покупок {st['buys']} · генераций {st['qty']}\n"
+            f"💰 Выручка: <b>{stars(st['stars'])}</b>" + (f" + <b>{_rub(st['rub'])}</b>" if st["rub"] else "") + "\n"
+            f"🎁 Бонусов новичкам: {st['bonus_users']} чел. · {st['bonus_given']} ген.\n"
+            f"💎 Наград партнёру: {st['rewards']} · {st['reward_given']} ген."
+            + (f" · ждут условия: {st['pending']}" if st["pending"] else "") + "\n"
+            f"📅 Новые за 7 дней: {_days_line(st['by_day'])}")
+    await show(event, text, kb(
+        [btn("👥 Кто пришёл", f"a:lku:{code}"), btn("📥 CSV", f"a:lkv:{code}")],
+        [btn("✏️ Изменить", f"a:lke:{code}"), btn("▶️ Включить" if not r["active"] else "⏸ Пауза", f"a:lkp:{code}")],
+        [btn("🔄 Обновить", f"a:lkc:{code}"), btn("🗑 Удалить", f"a:lkx:{code}", style="danger")],
+        [back("a:lk", "← Ссылки")]))
+
+
+@router.callback_query(F.data.startswith("a:lkc:"))
+async def cb_link_card(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await link_card(call, ctx, call.data.split(":", 2)[2])
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:lkp:"))
+async def cb_link_pause(call: CallbackQuery, ctx: Context) -> None:
+    code = call.data.split(":", 2)[2]
+    r = await partners.get(ctx.db, code)
+    if r is not None:
+        await partners.set_active(ctx.db, code, not r["active"])
+    await link_card(call, ctx, code)
+    await call.answer("Включена" if r is not None and not r["active"] else "На паузе")
+
+
+@router.callback_query(F.data.startswith("a:lku:"))
+async def cb_link_users(call: CallbackQuery, ctx: Context) -> None:
+    code = call.data.split(":", 2)[2]
+    rows = await partners.joined_users(ctx.db, code, 20)
+    mark = {0: "⏳", 1: "💎", 2: ""}
+    lines = [f"• {who(u)} · {dt(u['created_at'])} · паков {u['packs']}"
+             + (f" · купил {u['purchased_total']}" if u["purchased_total"] else "") + f" {mark.get(u['partner_rewarded'], '')}"
+             for u in rows]
+    text = (f"👥 <b>Последние пришедшие по ссылке</b> <code>{esc(code)}</code>\n"
+            "💎 — партнёр получил награду · ⏳ — ждёт условия\n\n" + ("\n".join(lines) or "Пока никого."))
+    await show(call, text, kb([btn("📥 Все в CSV", f"a:lkv:{code}")], [back(f"a:lkc:{code}", "← К ссылке")]))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:lkv:"))
+async def cb_link_csv(call: CallbackQuery, ctx: Context, bot: Bot) -> None:
+    code = call.data.split(":", 2)[2]
+    rows = await ctx.db.fetchall(
+        "SELECT u.id, u.username, u.first_name, u.created_at, u.balance, u.purchased_total, u.partner_rewarded,"
+        " (SELECT COUNT(*) FROM packs p WHERE p.user_id=u.id AND p.status='ready') AS packs"
+        " FROM users u WHERE u.partner=? ORDER BY u.created_at", (code,))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["id", "username", "first_name", "joined", "balance", "purchased", "packs", "partner_rewarded"])
+    for r in rows:
+        w.writerow([r["id"], r["username"] or "", r["first_name"] or "",
+                    datetime.datetime.fromtimestamp(r["created_at"]).strftime("%Y-%m-%d %H:%M"),
+                    r["balance"], r["purchased_total"], r["packs"], {0: "ждёт", 1: "да", 2: "нет"}.get(r["partner_rewarded"], "")])
+    await bot.send_document(call.from_user.id, BufferedInputFile(buf.getvalue().encode("utf-8-sig"), filename=f"partner-{code}.csv"),
+                            caption=f"👥 Пришли по ссылке {code}: {len(rows)}")
+    await call.answer("Отправил файлом")
+
+
+@router.callback_query(F.data.startswith("a:lkx:"))
+async def cb_link_delete_ask(call: CallbackQuery, ctx: Context) -> None:
+    code = call.data.split(":", 2)[2]
+    await show(call, f"🗑 Удалить ссылку <code>{esc(code)}</code>?\n\nОна перестанет работать, ожидающие награды партнёру "
+                     "не выдадутся. Уже начисленные генерации останутся. Чтобы просто остановить — лучше «⏸ Пауза».",
+               kb([btn("🗑 Да, удалить", f"a:lkz:{code}", style="danger"), btn("Отмена", f"a:lkc:{code}")]))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:lkz:"))
+async def cb_link_delete(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    await partners.delete(ctx.db, call.data.split(":", 2)[2])
+    await links_screen(call, ctx)
+    await call.answer("Удалена")
 
 
 # ───────────────────────── рассылка ─────────────────────────
@@ -1245,3 +1915,433 @@ async def cb_export(call: CallbackQuery, ctx: Context, bot: Bot) -> None:
     data = ("﻿" + buf.getvalue()).encode("utf-8")  # BOM — чтобы Excel открыл кириллицу
     await bot.send_document(call.from_user.id, BufferedInputFile(data, filename="ezzprod_users.csv"),
                             caption=f"📥 Пользователи: {len(rows)}")
+
+
+# ───────────────────────── кастомизация сообщений ─────────────────────────
+
+@router.callback_query(F.data == "a:msgs")
+async def cb_messages_list(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    customized_count = len(ctx.custom_texts)
+    text = (
+        "💬 <b>Кастомизация сообщений бота</b>\n\n"
+        "Здесь можно настроить любые стандартные тексты, которые бот отправляет в чат.\n"
+        "Поддерживаются переменные в фигурных скобках <code>{переменная}</code> — они подставляются автоматически.\n\n"
+        f"Всего сообщений: <b>{len(texts.MSG_DEFS)}</b>"
+        + (f" · изменённых: <b>{customized_count}</b>" if customized_count else "")
+    )
+    rows = []
+    for mdef in texts.MSG_DEFS.values():
+        mark = " ✎" if mdef.key in ctx.custom_texts else ""
+        rows.append([btn(f"{mdef.title}{mark}", f"a:msg:{mdef.key}")])
+    rows.append([back()])
+    await show(call, text, kb(*rows))
+    await call.answer()
+
+
+async def message_card(event, ctx: Context, key: str, note: str = "") -> None:
+    mdef = texts.MSG_DEFS.get(key)
+    if mdef is None:
+        return
+    cur = ctx.custom_texts.get(key)
+    is_custom = cur is not None
+    active_text = cur if is_custom else mdef.default
+    placeholders_str = ", ".join(mdef.placeholders) if mdef.placeholders else "нет"
+
+    text = (
+        f"💬 <b>{esc(mdef.title)}</b>\n\n"
+        f"<b>Статус:</b> {'✎ изменён' if is_custom else 'стандартный'}\n"
+        f"<b>Переменные:</b> <code>{esc(placeholders_str)}</code>\n"
+    )
+    if mdef.hint:
+        text += f"<i>{esc(mdef.hint)}</i>\n\n"
+    else:
+        text += "\n"
+
+    text += f"<b>Текущий текст:</b>\n<blockquote>{active_text}</blockquote>\n\n"
+    if is_custom:
+        text += f"<b>Стандартный текст:</b>\n<blockquote>{esc(mdef.default)}</blockquote>\n\n"
+
+    if note:
+        text += f"<b>{note}</b>\n\n"
+
+    rows = [
+        [btn("✏️ Изменить текст", f"a:msge:{key}", style="primary")],
+    ]
+    if is_custom:
+        rows.append([btn("↺ Сбросить к стандартному", f"a:msgr:{key}")])
+    if key.startswith("subscription"):
+        rows.append([back("a:sub", "← Обязательная подписка")])
+    rows.append([back("a:msgs", "← Тексты сообщений")])
+    try:
+        await show(event, text, kb(*rows))
+    except Exception:
+        fallback_text = (
+            f"💬 <b>{esc(mdef.title)}</b>\n\n"
+            f"<b>Статус:</b> {'✎ изменён' if is_custom else 'стандартный'}\n"
+            f"<b>Переменные:</b> <code>{esc(placeholders_str)}</code>\n\n"
+            f"<b>Текущий текст:</b>\n<blockquote>{esc(active_text)}</blockquote>\n\n"
+        )
+        if is_custom:
+            fallback_text += f"<b>Стандартный текст:</b>\n<blockquote>{esc(mdef.default)}</blockquote>\n\n"
+        if note:
+            fallback_text += f"<b>{note}</b>\n\n"
+        await show(event, fallback_text, kb(*rows))
+
+
+@router.callback_query(F.data.startswith("a:msg:"))
+async def cb_message_view(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    key = call.data.split(":")[2]
+    await message_card(call, ctx, key)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:msge:"))
+async def cb_message_edit(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    key = call.data.split(":")[2]
+    mdef = texts.MSG_DEFS.get(key)
+    if mdef is None:
+        return await call.answer()
+    await state.set_state(St.custom_text)
+    await state.update_data(key=key)
+    placeholders_str = ", ".join(mdef.placeholders) if mdef.placeholders else "нет"
+    text = (
+        f"✏️ <b>Редактирование текста:</b> {esc(mdef.title)}\n\n"
+        f"Доступные переменные: <code>{esc(placeholders_str)}</code>\n\n"
+        "Отправь новый текст сообщения следующим сообщением в этот чат.\n"
+        "Переменные будут подставлены автоматически при отправке пользователю."
+    )
+    await show(call, text, cancel(f"a:msg:{key}"))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:msgr:"))
+async def cb_message_reset(call: CallbackQuery, ctx: Context) -> None:
+    key = call.data.split(":")[2]
+    await runtime.update_custom_text(ctx, key, None)
+    await message_card(call, ctx, key, "↺ Сброшено к стандартному тексту")
+    await call.answer()
+
+
+@router.message(St.custom_text)
+async def msg_custom_text(message: Message, ctx: Context, state: FSMContext) -> None:
+    data = await state.get_data()
+    key = data.get("key")
+    if not key or key not in texts.MSG_DEFS:
+        await state.clear()
+        return
+
+    # Для кнопок используем чистый текст без тегов, для сообщений — сохраняем HTML и премиум-эмодзи:
+    if key in ("subscription_join", "subscription_check"):
+        new_text = (message.text or "").strip()
+        bkey = "sub_join" if key == "subscription_join" else "sub_check"
+        bcur = dict(ctx.custom_buttons.get(bkey) or {})
+        bcur["text"] = new_text
+        await runtime.update_custom_button(ctx, bkey, bcur)
+    else:
+        new_text = (message.html_text or message.text or "").strip()
+
+    if key.startswith("subscription"):
+        limit = 64 if key in ("subscription_join", "subscription_check") else 4000
+        if not new_text or len(new_text) > limit:
+            await message.answer(f"Нужен текст от 1 до {limit} символов.", reply_markup=cancel(f"a:msg:{key}"))
+            return
+
+    await runtime.update_custom_text(ctx, key, new_text)
+    await state.clear()
+    await message_card(message, ctx, key, "✅ Новый текст сохранён и уже действует")
+
+
+# ───────────────────────── кастомизация кнопок ─────────────────────────
+
+COLOR_NAMES = {
+    None: "⚪ Обычный (серый)",
+    "default": "⚪ Обычный (серый)",
+    "primary": "🔵 Синий (primary)",
+    "success": "🟢 Зелёный (success)",
+    "danger": "🔴 Красный (danger)",
+}
+
+
+@router.callback_query(F.data == "a:btns")
+async def cb_buttons_list(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    customized_count = len(ctx.custom_buttons)
+    text = (
+        "🔘 <b>Кастомизация кнопок бота</b>\n\n"
+        "Здесь можно настроить внешний вид и текст кнопок, которые бот отправляет в чат:\n"
+        "• <b>Текст</b> (до 64 символов, любые эмодзи)\n"
+        "• <b>Цвет кнопки</b> (обычный, синий primary, зелёный success, красный danger)\n"
+        "• <b>Telegram Premium эмодзи</b> (кастомный эмодзи на кнопке)\n\n"
+        f"Всего кнопок: <b>{len(texts.BTN_DEFS)}</b>"
+        + (f" · изменённых: <b>{customized_count}</b>" if customized_count else "")
+    )
+    rows = []
+    for bdef in texts.BTN_DEFS.values():
+        is_mod = bdef.key in ctx.custom_buttons
+        mark = " ✎" if is_mod else ""
+        rows.append([btn(f"{bdef.title}{mark}", f"a:btn:{bdef.key}")])
+    rows.append([back()])
+    await show(call, text, kb(*rows))
+    await call.answer()
+
+
+async def button_card(event, ctx: Context, key: str, note: str = "") -> None:
+    bdef = texts.BTN_DEFS.get(key)
+    if bdef is None:
+        return
+    cur = ctx.custom_buttons.get(key) or {}
+    is_custom = bool(cur)
+    active_text = cur.get("text") or bdef.default_text
+
+    raw_style = cur.get("style")
+    if raw_style in ("primary", "success", "danger", "default"):
+        active_style = raw_style
+    else:
+        active_style = bdef.default_style if bdef else "default"
+
+    active_emoji = cur.get("icon_custom_emoji_id", bdef.default_emoji_id if bdef else None)
+
+    color_title = COLOR_NAMES.get(active_style, "⚪ Обычный (серый)")
+    emoji_str = f"<code>{active_emoji}</code>" if active_emoji else "нет"
+
+    text = (
+        f"🔘 <b>{esc(bdef.title)}</b>\n\n"
+        f"<b>Статус:</b> {'✎ изменён' if is_custom else 'стандартный'}\n"
+        f"<b>Текст кнопки:</b> <code>{esc(active_text)}</code>\n"
+        f"<b>Цвет кнопки:</b> {color_title}\n"
+        f"<b>Премиум-эмодзи:</b> {emoji_str}\n"
+    )
+    if bdef.hint:
+        text += f"<i>{esc(bdef.hint)}</i>\n\n"
+    else:
+        text += "\n"
+
+    if is_custom and active_text != bdef.default_text:
+        text += f"<b>Стандартный текст:</b> <code>{esc(bdef.default_text)}</code>\n\n"
+
+    if note:
+        text += f"<b>{note}</b>\n\n"
+
+    text += "<i>Нажми на превью кнопки ниже для проверки её отображения:</i>"
+
+    def make_preview_markup(with_emoji: bool = True):
+        extra = {}
+        if active_style in ("primary", "success", "danger"):
+            extra["style"] = active_style
+        if with_emoji and active_emoji:
+            extra["icon_custom_emoji_id"] = str(active_emoji)
+
+        preview_button = InlineKeyboardButton(
+            text=f"👁 {active_text}",
+            callback_data=f"a:btnpv:{key}",
+            **extra
+        )
+        action_rows = [
+            [preview_button],
+            [btn("✏️ Изменить текст", f"a:btne:{key}", style="primary"),
+             btn("🎨 Цвет кнопки", f"a:btnc:{key}")],
+        ]
+        if not active_emoji:
+            action_rows.append([btn("✨ Задать премиум-эмодзи", f"a:btnem:{key}")])
+        else:
+            action_rows.append([
+                btn("✨ Изменить эмодзи", f"a:btnem:{key}"),
+                btn("❌ Убрать эмодзи", f"a:btnremem:{key}"),
+            ])
+
+        if is_custom:
+            action_rows.append([btn("↺ Сбросить к стандартной", f"a:btnr:{key}")])
+        if key in ("sub_join", "sub_check"):
+            action_rows.append([back("a:sub", "← Обязательная подписка")])
+        action_rows.append([back("a:btns", "← Все кнопки")])
+        return kb(*action_rows)
+
+    try:
+        await show(event, text, make_preview_markup(with_emoji=True))
+    except Exception:
+        try:
+            fallback_text = text + "\n\n⚠️ <i>(Предпросмотр эмодзи на кнопке временно недоступен)</i>"
+            await show(event, fallback_text, make_preview_markup(with_emoji=False))
+        except Exception:
+            await show(event, esc(text), kb([back("a:btns")]))
+
+
+@router.callback_query(F.data.startswith("a:btnpv:"))
+async def cb_button_preview_click(call: CallbackQuery) -> None:
+    await call.answer("Это интерактивное превью кнопки. В чате она выполняет своё действие.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("a:btn:"))
+async def cb_button_view(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    await state.clear()
+    key = call.data.split(":")[2]
+    await button_card(call, ctx, key)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:btne:"))
+async def cb_button_text_prompt(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    key = call.data.split(":")[2]
+    bdef = texts.BTN_DEFS.get(key)
+    if bdef is None:
+        return await call.answer()
+    await state.set_state(St.custom_button_text)
+    await state.update_data(key=key)
+    cur = ctx.custom_buttons.get(key) or {}
+    cur_text = cur.get("text") or bdef.default_text
+
+    text = (
+        f"✏️ <b>Редактирование текста кнопки:</b> {esc(bdef.title)}\n\n"
+        f"Текущий текст: <code>{esc(cur_text)}</code>\n"
+        f"Стандартный текст: <code>{esc(bdef.default_text)}</code>\n\n"
+        "Отправь новый текст кнопки сообщением в этот чат (от 1 до 64 символов).\n"
+        "Можно использовать любые эмодзи."
+    )
+    await show(call, text, cancel(f"a:btn:{key}"))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:btnc:"))
+async def cb_button_color(call: CallbackQuery, ctx: Context) -> None:
+    key = call.data.split(":")[2]
+    bdef = texts.BTN_DEFS.get(key)
+    if bdef is None:
+        return await call.answer()
+    cur = ctx.custom_buttons.get(key) or {}
+    raw_style = cur.get("style")
+    if raw_style in ("primary", "success", "danger", "default"):
+        cur_style = raw_style
+    else:
+        cur_style = bdef.default_style if bdef else "default"
+
+    text = (
+        f"🎨 <b>Выбор цвета кнопки:</b> {esc(bdef.title)}\n\n"
+        f"Текущий цвет: <b>{COLOR_NAMES.get(cur_style, '⚪ Обычный (серый)')}</b>\n\n"
+        "Выберите стиль кнопки в Telegram:"
+    )
+    rows = [
+        [btn("⚪ Обычный (серый)", f"a:btnsetc:{key}:default")],
+        [btn("🔵 Синий (primary)", f"a:btnsetc:{key}:primary", style="primary")],
+        [btn("🟢 Зелёный (success)", f"a:btnsetc:{key}:success", style="success")],
+        [btn("🔴 Красный (danger)", f"a:btnsetc:{key}:danger", style="danger")],
+        [back(f"a:btn:{key}", "← Назад к кнопке")],
+    ]
+    await show(call, text, kb(*rows))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:btnsetc:"))
+async def cb_button_set_color(call: CallbackQuery, ctx: Context) -> None:
+    parts = call.data.split(":")
+    key = parts[2]
+    color = parts[3]
+    cur = dict(ctx.custom_buttons.get(key) or {})
+    cur["style"] = color
+
+    await runtime.update_custom_button(ctx, key, cur)
+    await button_card(call, ctx, key, f"✅ Цвет кнопки изменён на: {COLOR_NAMES.get(color, '⚪ Обычный (серый)')}")
+    await call.answer()
+
+
+
+@router.callback_query(F.data.startswith("a:btnem:"))
+async def cb_button_emoji_prompt(call: CallbackQuery, ctx: Context, state: FSMContext) -> None:
+    key = call.data.split(":")[2]
+    bdef = texts.BTN_DEFS.get(key)
+    if bdef is None:
+        return await call.answer()
+    await state.set_state(St.custom_button_emoji)
+    await state.update_data(key=key)
+    cur = ctx.custom_buttons.get(key) or {}
+    cur_emoji = cur.get("icon_custom_emoji_id")
+
+    text = (
+        f"✨ <b>Telegram Premium эмодзи для кнопки:</b> {esc(bdef.title)}\n\n"
+        + (f"Текущий эмодзи ID: <code>{cur_emoji}</code>\n\n" if cur_emoji else "")
+        + "<b>Как установить:</b>\n"
+        "1. Если у тебя есть <b>Telegram Premium</b>, просто отправь сообщение с нужным эмодзи — бот сам распознает его <code>custom_emoji_id</code>.\n"
+        "2. Или отправь числовой ID кастомного эмодзи (например: <code>5368324170671202286</code>).\n\n"
+        "<i>Отправь сообщение в этот чат или нажми «Отмена».</i>"
+    )
+    await show(call, text, cancel(f"a:btn:{key}"))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:btnremem:"))
+async def cb_button_remove_emoji(call: CallbackQuery, ctx: Context) -> None:
+    key = call.data.split(":")[2]
+    cur = dict(ctx.custom_buttons.get(key) or {})
+    cur.pop("icon_custom_emoji_id", None)
+    val = cur if (cur.get("text") or cur.get("style") or cur.get("icon_custom_emoji_id")) else None
+    await runtime.update_custom_button(ctx, key, val)
+    await button_card(call, ctx, key, "✅ Премиум-эмодзи удалён с кнопки")
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:btnr:"))
+async def cb_button_reset(call: CallbackQuery, ctx: Context) -> None:
+    key = call.data.split(":")[2]
+    await runtime.update_custom_button(ctx, key, None)
+    await button_card(call, ctx, key, "↺ Кнопка сброшена к стандартному виду")
+    await call.answer()
+
+
+@router.message(St.custom_button_text)
+async def msg_custom_button_text(message: Message, ctx: Context, state: FSMContext) -> None:
+    data = await state.get_data()
+    key = data.get("key")
+    if not key or key not in texts.BTN_DEFS:
+        await state.clear()
+        return
+
+    raw_text = (message.text or message.caption or "").strip()
+    if not raw_text or len(raw_text) > 64:
+        await message.answer("⚠️ Текст кнопки должен быть от 1 до 64 символов. Попробуй ещё раз:", reply_markup=cancel(f"a:btn:{key}"))
+        return
+
+    cur = dict(ctx.custom_buttons.get(key) or {})
+    cur["text"] = raw_text
+    await runtime.update_custom_button(ctx, key, cur)
+    if key in ("sub_join", "sub_check"):
+        tkey = "subscription_join" if key == "sub_join" else "subscription_check"
+        await runtime.update_custom_text(ctx, tkey, raw_text)
+    await state.clear()
+    await button_card(message, ctx, key, "✅ Текст кнопки успешно обновлён!")
+
+
+@router.message(St.custom_button_emoji)
+async def msg_custom_button_emoji(message: Message, ctx: Context, state: FSMContext) -> None:
+    data = await state.get_data()
+    key = data.get("key")
+    if not key or key not in texts.BTN_DEFS:
+        await state.clear()
+        return
+
+    emoji_id = None
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        if getattr(ent, "type", None) == "custom_emoji" and getattr(ent, "custom_emoji_id", None):
+            emoji_id = str(ent.custom_emoji_id)
+            break
+
+    if not emoji_id:
+        raw_text = (message.text or message.caption or "").strip()
+        if raw_text.isdigit() and len(raw_text) >= 5:
+            emoji_id = raw_text
+
+    if not emoji_id:
+        await message.answer(
+            "⚠️ Не удалось найти кастомный эмодзи.\n\n"
+            "Отправь сообщение с <b>Telegram Premium эмодзи</b> или числовой <code>custom_emoji_id</code>:",
+            reply_markup=cancel(f"a:btn:{key}"),
+            parse_mode="HTML"
+        )
+        return
+
+    cur = dict(ctx.custom_buttons.get(key) or {})
+    cur["icon_custom_emoji_id"] = emoji_id
+    await runtime.update_custom_button(ctx, key, cur)
+    await state.clear()
+    await button_card(message, ctx, key, f"✅ Премиум-эмодзи установлен! (ID: <code>{emoji_id}</code>)")

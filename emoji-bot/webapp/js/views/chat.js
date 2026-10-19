@@ -1,110 +1,152 @@
-// Пак «как в чате Telegram»: шапка чата, обои с узором, сообщения (крупный эмодзи без пузыря,
-// стикер, текст с эмодзи) и клавиатура пака снизу — тап по эмодзи «отправляет» его в чат.
-// pack: { title, type: 'emoji' | 'sticker', items: [{ key, node(big) }], link?, sub }
+// Пак «как в чате Telegram»: простая и понятная симуляция переписки с другом.
+// Сверху сообщение «Покажи свой стикер!» от друга, ниже — твой анимированный стикер,
+// и компактная строка стикеров снизу для моментальной отправки в чат.
 import { previewUrl } from '../api.js';
-import { TgEmoji } from '../emoji.js';
 import { openOverlay } from '../nav.js';
-import { haptic, openLink } from '../tg.js';
+import { haptic } from '../tg.js';
+import { lookFromParams, TgsPreview } from '../tgs.js';
 import { emojiWord, h, icon, prefersReducedMotion } from '../ui.js';
 
-const clock = () => {
-  const d = new Date();
+const clock = (offsetMin = 0) => {
+  const d = new Date(Date.now() + offsetMin * 60000);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
 /** Пак пользователя (из /api/packs) → общий вид для чата. */
-export function userChatPack(pack) {
+export function userChatPack(pack, options = {}) {
   const sticker = pack.type === 'sticker';
   const text = pack.params && pack.params.text;
+  let lookPromise = null;
+  let cachedLook = null;
+  if (pack.params && (pack.params.text || pack.params.color || pack.params.stroke)) {
+    // сервер хранит шрифт как font_id, превью ждёт {font: {id}} — как в store.lookFor
+    const p = { ...pack.params, font: pack.params.font_id ? { id: pack.params.font_id } : null };
+    lookPromise = lookFromParams(p, true).then((l) => {
+      cachedLook = l;
+      return l;
+    }).catch(() => null);
+  }
+
+  const rawItems = (pack.items && pack.items.length) ? pack.items : (pack.preview || []);
+  const initialId = options.initialId || rawItems[0];
+
   return {
     title: pack.title,
     type: pack.type,
-    link: pack.link,
-    sub: emojiWord(pack.count, pack.type),
-    items: (pack.items || pack.preview).map((id) => ({
+    sub: emojiWord(pack.count || rawItems.length, pack.type),
+    initialId,
+    items: rawItems.map((id) => ({
       key: id,
-      node: (big) => h('span', { class: big ? (sticker ? 'tgm__sticker' : 'tgm__emoji') : 'tgk__emoji' },
-        h('img', { src: previewUrl(id), alt: '', draggable: false, decoding: 'async' }),
-        text ? h('span', { class: 'tgm__nick' }, text) : null),
+      node: (big) => {
+        if (big) {
+          const wrap = h('span', { class: sticker ? 'tgm__sticker' : 'tgm__emoji' });
+          const player = TgsPreview(id, {
+            autoplay: true,
+            lazy: false,
+            look: cachedLook,
+            cls: sticker ? 'tgm__tgs-sticker' : 'tgm__tgs-emoji',
+          });
+          wrap.append(player.el);
+          if (!cachedLook && lookPromise) {
+            lookPromise.then((look) => {
+              if (look) player.update(look);
+            });
+          }
+          return wrap;
+        }
+        return h('span', { class: 'tgchat__shelf-thumb' },
+          h('img', { src: previewUrl(id), alt: '', draggable: false, decoding: 'async', loading: 'lazy' }),
+          text ? h('span', { class: 'tgm__nick' }, text) : null);
+      },
     })),
   };
 }
 
-function Time({ out = true, chip = false } = {}) {
-  return h('span', { class: `tgm__time${chip ? ' tgm__time--chip' : ''}` }, clock(),
+function Time({ out = true, chip = false, time = clock() } = {}) {
+  return h('span', { class: `tgm__time${chip ? ' tgm__time--chip' : ''}` },
+    time,
     out ? icon('checks', 'tgm__checks') : null);
 }
 
 // одиночный эмодзи или стикер: без пузыря, крупно, время на плашке
 function MediaMessage(item, sticker) {
-  return h('div', { class: `tgm tgm--out tgm--media${sticker ? ' tgm--sticker' : ''}` },
-    item.node(true), Time({ chip: true }));
+  return h('div', {
+    class: `tgm tgm--out tgm--media${sticker ? ' tgm--sticker' : ''}`,
+    onclick: () => haptic.tap(),
+  },
+  item.node(true),
+  Time({ chip: true, out: true }));
 }
 
-function TextMessage({ out = false, children, buttons = null }) {
+function TextMessage({ out = false, text, time } = {}) {
   return h('div', { class: `tgm ${out ? 'tgm--out' : 'tgm--in'}` },
-    h('div', { class: 'tgm__bubble' }, ...children, Time({ out })),
-    buttons);
+    h('div', { class: 'tgm__bubble' },
+      h('span', { class: 'tgm__text' }, text),
+      Time({ out, time: time || clock(out ? 0 : -1) })));
 }
 
 export function openPackChat(pack) {
   const sticker = pack.type === 'sticker';
   openOverlay({
     kind: 'screen',
-    label: pack.title,
+    label: pack.title || 'Чат',
     className: 'layer--chat',
     render: ({ close }) => {
-      const cover = pack.items[0];
       const list = h('div', { class: 'tgchat__list' });
       const body = h('div', { class: 'tgchat__body' }, list);
-      const scrollDown = (smooth) => body.scrollTo({ top: body.scrollHeight, behavior: smooth && !prefersReducedMotion() ? 'smooth' : 'auto' });
+      const scrollDown = (smooth) => body.scrollTo({
+        top: body.scrollHeight,
+        behavior: smooth && !prefersReducedMotion() ? 'smooth' : 'auto',
+      });
 
-      // ── шапка как в Telegram
+      // ── шапка как в Telegram: Друг · в сети
       const head = h('header', { class: 'tgchat__head' },
         h('button', { class: 'tgchat__back', type: 'button', 'aria-label': 'назад', onclick: () => { haptic.tap(); close(); } }, icon('chev-left')),
-        h('span', { class: 'tgchat__avatar', 'aria-hidden': 'true' }, cover ? cover.node(false) : null),
-        h('span', { class: 'tgchat__title' }, h('b', null, pack.title), h('span', null, pack.sub)),
+        h('span', { class: 'tgchat__avatar', 'aria-hidden': 'true' },
+          h('span', { class: 'tgchat__initial' }, 'Д')),
+        h('span', { class: 'tgchat__title' },
+          h('b', null, 'Друг'),
+          h('span', { class: 'is-online' }, 'в сети')),
         h('span', { class: 'tgchat__more', 'aria-hidden': 'true' }, icon('dots')));
 
-      // ── стартовые сообщения
-      const inline = pack.items.slice(0, 3).map((it) => h('span', { class: 'tgm__inline' }, it.node(false)));
-      const openBtn = pack.link
-        ? h('div', { class: 'tgm__buttons' }, h('button', { class: 'tgm__btn', type: 'button', onclick: () => openLink(pack.link) },
-          sticker ? 'Добавить стикеры' : 'Добавить эмодзи'))
-        : null;
+      // ── стартовые сообщения:
+      // 1. Дата: "Сегодня"
+      // 2. Входящее от друга: "Покажи свой стикер!"
+      // 3. Исходящее: твой стикер уже отправлен
+      const initialItem = pack.items.find((it) => it.key === pack.initialId) || pack.items[0];
+
       list.append(
         h('div', { class: 'tgchat__date' }, 'Сегодня'),
         TextMessage({
-          children: [
-            h('span', { class: 'tgm__inline' }, TgEmoji('gift')), ' ', h('b', { class: 'tgm__title' }, pack.title), h('br'),
-            `${pack.sub}. Нажми на ${sticker ? 'стикер' : 'эмодзи'} внизу — он отправится в чат `, ...inline, h('br'),
-            h('span', { class: 'tgm__inline' }, TgEmoji('fire')), ' Так пак будет выглядеть у тебя в Telegram',
-          ],
-          buttons: openBtn,
-        }));
-      if (cover) list.append(MediaMessage(cover, sticker));
+          out: false,
+          text: sticker ? 'Покажи свой стикер!' : 'Покажи свои эмодзи!',
+          time: clock(-1),
+        })
+      );
 
-      // ── клавиатура пака
-      const grid = h('div', { class: `tgk__grid${sticker ? ' tgk__grid--stickers' : ''}` },
-        pack.items.map((it) => h('button', { class: 'tgk__item', type: 'button', 'aria-label': 'отправить', onclick: () => {
-          haptic.tap();
-          list.append(MediaMessage(it, sticker));
-          requestAnimationFrame(() => scrollDown(true));
-        } }, it.node(false))));
-      const panel = h('div', { class: 'tgk' },
-        h('div', { class: 'tgk__tabs' },
-          h('span', { class: 'tgk__tab is-active', 'aria-hidden': 'true' }, cover ? cover.node(false) : null),
-          h('span', { class: 'tgk__name' }, pack.title)),
-        grid);
+      if (initialItem) {
+        list.append(MediaMessage(initialItem, sticker));
+      }
 
-      const input = h('div', { class: 'tgchat__input' },
-        h('span', { class: 'tgchat__icon is-on', 'aria-hidden': 'true' }, icon('smile')),
-        h('span', { class: 'tgchat__field' }, 'Сообщение'),
-        h('span', { class: 'tgchat__icon', 'aria-hidden': 'true' }, icon('clip')),
-        h('span', { class: 'tgchat__icon', 'aria-hidden': 'true' }, icon('mic')));
+      // ── компактная строка стикеров снизу для моментальной отправки
+      const shelfList = h('div', { class: 'tgchat__shelf-list' },
+        pack.items.map((it) => h('button', {
+          class: 'tgchat__shelf-btn',
+          type: 'button',
+          'aria-label': 'отправить стикер',
+          onclick: () => {
+            haptic.tap();
+            list.append(MediaMessage(it, sticker));
+            requestAnimationFrame(() => scrollDown(true));
+          },
+        }, it.node(false))));
 
-      requestAnimationFrame(() => scrollDown(false));
-      return [head, body, input, panel];
+      const bottomBar = h('div', { class: 'tgchat__shelf-bar' },
+        h('span', { class: 'tgchat__shelf-icon', 'aria-hidden': 'true' }, icon('smile')),
+        shelfList);
+
+      setTimeout(() => scrollDown(false), 50);
+      return [head, body, bottomBar];
     },
   });
 }

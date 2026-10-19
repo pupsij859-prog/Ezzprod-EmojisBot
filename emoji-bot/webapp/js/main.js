@@ -1,10 +1,10 @@
 import { api, ApiError, previewUrl } from './api.js';
-import { ErrorState } from './components.js';
+import { Button, ErrorState, setBusy } from './components.js';
 import { closeAll, mountDevFrame } from './nav.js';
 import { setTabHandler } from './router.js';
 import { bus, loadPrefs, setMe, state } from './store.js';
 import { TabBar } from './tabbar.js';
-import { haptic, initTelegram } from './tg.js';
+import { haptic, initTelegram, openLink } from './tg.js';
 import { emojiWord, h, icon } from './ui.js';
 import { mountAdmin } from './views/admin.js';
 import { openOrder } from './views/customize.js';
@@ -46,8 +46,28 @@ let cleanup = null;
 function CartBar() {
   const thumbs = h('span', { class: 'cartbar__thumbs', 'aria-hidden': 'true' });
   const label = h('b', { class: 'cartbar__label' });
-  const el = h('button', { class: 'cartbar', type: 'button', 'aria-label': 'оформить заказ', onclick: () => { haptic.tap(); openOrder(); } },
-    thumbs, label, h('span', { class: 'cartbar__go' }, 'Оформить', icon('chev-right')));
+  const goText = h('span', null, 'Оформить');
+  const goSpan = h('span', { class: 'cartbar__go' }, goText, icon('chev-right'));
+  const el = h('button', {
+    class: 'cartbar',
+    type: 'button',
+    'aria-label': 'оформить заказ',
+    onclick: () => {
+      haptic.tap();
+      openOrder({
+        targetPack: state.targetPack,
+        onAdded: (updated) => {
+          const pack = state.targetPack;
+          state.targetPack = null;
+          switchTab('packs');
+          if (pack) {
+            import('./views/pack_details.js').then((m) => m.openPackDetails(updated || pack)).catch(() => {});
+          }
+        },
+      });
+    },
+  }, thumbs, label, goSpan);
+
   let last = -1;
   const update = () => {
     const n = state.selection.length;
@@ -57,17 +77,25 @@ function CartBar() {
     document.body.classList.toggle('has-cart', show);
     if (!n) { last = 0; return; }
     label.textContent = emojiWord(n, state.type);
-    thumbs.replaceChildren(...state.selection.slice(-3).map((id) => h('img', { src: previewUrl(id), alt: '', decoding: 'async' })));
+    goText.textContent = state.targetPack ? 'В пак' : 'Оформить';
+    const slice = state.selection.slice(-3);
+    const key = slice.join(',');
+    if (thumbs.dataset.key !== key) {
+      thumbs.dataset.key = key;
+      thumbs.replaceChildren(...slice.map((id) => h('img', { src: previewUrl(id), alt: '', decoding: 'async' })));
+    }
     if (last > 0 && n !== last) {
       el.classList.remove('bump');
-      void el.offsetWidth; // перезапуск анимации
-      el.classList.add('bump');
+      requestAnimationFrame(() => {
+        el.classList.add('bump');
+      });
     }
     last = n;
   };
   bus.on('selection', update);
   bus.on('type', update);
   bus.on('tab', update);
+  bus.on('targetPack', update);
   update();
   return el;
 }
@@ -103,9 +131,49 @@ const FATAL = {
 
 function fatal(err) {
   const code = err instanceof ApiError ? (err.status === 401 ? 'unauthorized' : err.code) : '';
+  if (code === 'subscription_required' || code === 'subscription_unavailable') {
+    subscriptionGate(err.detail);
+    return;
+  }
   const [title, text] = FATAL[code] || ['Не получилось запуститься', 'Проверь соединение и попробуй ещё раз'];
   app.replaceChildren(ErrorState({ title, text, onRetry: () => location.reload() }));
 }
+
+let subscriptionShown = false;
+function subscriptionGate(detail) {
+  subscriptionShown = true;
+  closeAll();
+  if (cleanup) { cleanup(); cleanup = null; }
+  document.body.classList.remove('has-cart');
+  const status = h('p', { class: 'empty__text', role: 'status', 'aria-live': 'polite' },
+    detail.code === 'subscription_unavailable' ? detail.error : '');
+  const check = Button({ label: detail.check_label, variant: 'secondary', onClick: async () => {
+    setBusy(check, true, 'Проверяем…');
+    status.textContent = '';
+    try {
+      await api.me();
+      location.reload();
+    } catch (err) {
+      if (err.code === 'subscription_required' || err.code === 'subscription_unavailable') {
+        status.textContent = err.detail.error;
+      } else {
+        fatal(err);
+      }
+    } finally {
+      setBusy(check, false);
+    }
+  } });
+  const channel = detail.channel_url ? Button({ label: detail.join_label, onClick: () => openLink(detail.channel_url) }) : null;
+  const gateMsg = (detail.clean_message || detail.message || '').replace(/<[^>]+>/g, '');
+  app.replaceChildren(h('div', { class: 'empty subscription-gate' },
+    h('h2', { class: 'empty__title' }, 'Подписка на канал'),
+    h('p', { class: 'empty__text subscription-gate__message' }, gateMsg),
+    h('div', { class: 'subscription-gate__actions' }, channel, check), status));
+}
+
+window.addEventListener('ez:subscription-required', (event) => {
+  if (state.me && !subscriptionShown) subscriptionGate(event.detail);
+});
 
 // initData живёт сутки: если сессия истекла посреди работы, любой экран покажет понятное сообщение
 let expiredShown = false;

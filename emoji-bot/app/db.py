@@ -164,6 +164,58 @@ CREATE TABLE IF NOT EXISTS fonts (
 );
 CREATE INDEX IF NOT EXISTS idx_fonts_user ON fonts (user_id);
 """,
+    # v6: удаление паков из вкладки (soft delete)
+    6: """
+ALTER TABLE packs ADD COLUMN deleted_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_packs_user_active ON packs (user_id, deleted_at, id DESC);
+""",
+    # v7: поддержка мульти-провайдеров оплаты (CryptoBot, xRocket)
+    7: """
+ALTER TABLE payments ADD COLUMN method TEXT NOT NULL DEFAULT 'stars';
+ALTER TABLE payments ADD COLUMN amount_rub INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE payments ADD COLUMN external_id TEXT;
+""",
+    # v8: живой прогресс нельзя вычислять по таймеру демо-сборки.
+    8: """
+ALTER TABLE packs ADD COLUMN live_build INTEGER NOT NULL DEFAULT 0;
+UPDATE packs SET live_build=1 WHERE set_name IS NOT NULL;
+""",
+    # v9: промокоды с настройками (случайная награда, срок, пауза, только новичкам, пачки кодов)
+    9: """
+ALTER TABLE promos ADD COLUMN gens_max INTEGER;
+ALTER TABLE promos ADD COLUMN expires_at INTEGER;
+ALTER TABLE promos ADD COLUMN only_new INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE promos ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE promos ADD COLUMN batch TEXT;
+ALTER TABLE promo_uses ADD COLUMN gens INTEGER NOT NULL DEFAULT 0;
+""",
+    # v10: промокоды со скидкой в % (скидка на покупку генераций)
+    10: """
+ALTER TABLE promos ADD COLUMN discount_pct INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE promo_uses ADD COLUMN discount_pct INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN discount_pct INTEGER NOT NULL DEFAULT 0;
+""",
+    # v11: партнёрские ссылки для рекламы (app/partners.py): бонус новичку, награда партнёру, статистика
+    11: """
+CREATE TABLE IF NOT EXISTS partner_links (
+    code        TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    owner_id    INTEGER,
+    bonus_new   INTEGER NOT NULL DEFAULT 0,
+    reward      INTEGER NOT NULL DEFAULT 0,
+    reward_on   TEXT NOT NULL DEFAULT 'pack',
+    reward_cap  INTEGER NOT NULL DEFAULT 0,
+    uses_max    INTEGER NOT NULL DEFAULT 0,
+    expires_at  INTEGER,
+    active      INTEGER NOT NULL DEFAULT 1,
+    clicks      INTEGER NOT NULL DEFAULT 0,
+    created_by  INTEGER,
+    created_at  INTEGER NOT NULL
+);
+ALTER TABLE users ADD COLUMN partner TEXT;
+ALTER TABLE users ADD COLUMN partner_rewarded INTEGER NOT NULL DEFAULT 2;
+CREATE INDEX IF NOT EXISTS idx_users_partner ON users (partner, created_at);
+""",
 }
 
 
@@ -217,7 +269,14 @@ class Database:
             await self.conn.executescript(SCHEMA)
             version = SCHEMA_VERSION
         for target in sorted(v for v in MIGRATIONS if v > version):
-            await self.conn.executescript(MIGRATIONS[target])
+            statements = [s.strip() for s in MIGRATIONS[target].strip().split(";") if s.strip()]
+            for stmt in statements:
+                try:
+                    await self.conn.execute(stmt)
+                except aiosqlite.OperationalError as e:
+                    if "duplicate column name" in str(e).lower() or "already exists" in str(e).lower():
+                        continue
+                    raise
             version = target
         await self.conn.execute(f"PRAGMA user_version = {int(version)}")
 

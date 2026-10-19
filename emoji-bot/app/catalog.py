@@ -27,6 +27,7 @@ class Category:
 
 # порядок, название и эмодзи-подпись (её Telegram показывает рядом с элементом пака)
 KNOWN: dict[str, tuple[str, str]] = {
+    "new": ("NEW", "🆕"),  # новые шаблоны (tools/import_templates.py): вместо логотипа «iD» — ник или логотип
     "classic": ("классика", "✨"),
     "characters": ("персонажи", "😎"),
     "gift": ("подарки", "🎁"),

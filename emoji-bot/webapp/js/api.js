@@ -45,6 +45,9 @@ async function request(method, path, body, { form = false, headers: extra = {}, 
   if (!res.ok && data === null && res.status >= 502) serverGone();
   if (!res.ok) {
     const detail = data && data.detail;
+    if (detail && ['subscription_required', 'subscription_unavailable'].includes(detail.code)) {
+      window.dispatchEvent(new CustomEvent('ez:subscription-required', { detail }));
+    }
     throw new ApiError(res.status, typeof detail === 'object' && detail ? detail : { code: `http_${res.status}` });
   }
   if (data === null) throw new ApiError(res.status, { code: 'invalid_response' });
@@ -66,6 +69,8 @@ export const api = {
   deleteLogo: (id) => request('DELETE', `/logos/${encodeURIComponent(id)}`),
   // векторный логотип для живого превью (после перезапуска приложения)
   logoVector: (id) => request('GET', `/logos/${encodeURIComponent(id)}/vector`),
+  // шрифты ника: готовые и свои загруженные {presets, own, max}
+  fonts: () => request('GET', '/fonts'),
   // свой шрифт ника (.ttf)
   uploadFont(file) {
     const form = new FormData();
@@ -73,15 +78,19 @@ export const api = {
     return request('POST', '/fonts', form, { form: true });
   },
   deleteFont: (id) => request('DELETE', `/fonts/${encodeURIComponent(id)}`),
-  // ник как контуры букв (fontId — свой шрифт, null — стандартный) — для живого превью шаблонов
+  // ник как контуры букв (fontId — готовый или свой шрифт, null — стандартный) — для живого превью шаблонов
   glyphs: (text, fontId = null) => request('POST', '/glyphs', { text, font_id: fontId }),
   // продвинутый редактор (Pro): готовая анимация с правками, части эмодзи, цвета и проверка под Telegram
   render: (body, signal) => request('POST', '/render', body, { signal }),
   // idempotencyKey: повтор запроса с тем же ключом не спишет генерации второй раз
   createPack: (body, idempotencyKey) =>
     request('POST', '/packs', body, { headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {} }),
-  pack: (id) => request('GET', `/packs/${id}`),
+  pack: (id, signal) => request('GET', `/packs/${id}`, undefined, { signal }),
   packs: () => request('GET', '/packs'),
+  deletePack: (id) => request('DELETE', `/packs/${id}`),
+  addPackItems: (id, templateIds, { overrides = null, params = null } = {}) =>
+    request('POST', `/packs/${id}/items`, { template_ids: templateIds, overrides, params }),
+  deletePackItem: (id, templateId) => request('DELETE', `/packs/${id}/items/${encodeURIComponent(templateId)}`),
   styles: () => request('GET', '/styles'),
   addStyle: (body) => request('POST', '/styles', body),
   deleteStyle: (id) => request('DELETE', `/styles/${id}`),
@@ -89,6 +98,7 @@ export const api = {
   paymentStatus: (id) => request('GET', `/billing/payments/${id}`),
   devPay: (qty, method = 'stars') => request('POST', '/dev/pay', { qty, method }),
   referral: () => request('GET', '/referral'),
+  redeemPromo: (code) => request('POST', '/promo', { code }),
   emoji: () => request('GET', '/emoji'),
   admin: {
     stats: () => request('GET', '/admin/stats'),
@@ -103,7 +113,7 @@ export const api = {
 
 /** Статичная картинка шаблона (assets/thumbs, кадр анимации). Анимацию с ником показывает js/tgs.js. */
 // меняй при обновлении шаблонов или их картинок, чтобы сбросить кэш браузера (картинки и файлы .tgs)
-export const PREVIEW_VERSION = '2';
+export const PREVIEW_VERSION = '3';
 export const previewUrl = (templateId) => `assets/thumbs/${encodeURIComponent(templateId)}.webp?v=${PREVIEW_VERSION}`;
 
 export function newIdempotencyKey() {

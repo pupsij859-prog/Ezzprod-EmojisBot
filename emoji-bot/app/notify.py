@@ -8,6 +8,7 @@ class Notifier(Protocol):
     async def pack_ready(self, user_id: int, pack: dict) -> None: ...
     async def pack_failed(self, user_id: int, pack_id: int) -> None: ...
     async def referral_reward(self, user_id: int, amount: int) -> None: ...
+    async def partner_reward(self, user_id: int, amount: int) -> None: ...
     async def payment_ok(self, user_id: int, qty: int, balance: int) -> None: ...
     async def admin_alert(self, text: str) -> None: ...
 
@@ -24,8 +25,16 @@ class NullNotifier:
     async def referral_reward(self, user_id: int, amount: int) -> None:
         return None
 
+    async def partner_reward(self, user_id: int, amount: int) -> None:
+        return None
+
     async def payment_ok(self, user_id: int, qty: int, balance: int) -> None:
         return None
 
     async def admin_alert(self, text: str) -> None:
         return None
+
+
+def reward_sender(notifier: Notifier, kind: str):
+    """Чем уведомить о награде: за друга (реферал) или партнёру за приведённого по его ссылке."""
+    return notifier.partner_reward if kind == "partner" else notifier.referral_reward

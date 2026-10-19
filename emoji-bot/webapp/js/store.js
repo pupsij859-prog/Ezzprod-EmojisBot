@@ -33,13 +33,29 @@ export const state = {
   color: null, // «Заливка» — основной цвет стикера '#rrggbb'; null — родной у каждого шаблона
   stroke: null, // «Обводка» — контуры и надпись '#rrggbb'; null — родные
   size: 100, // «Размер надписи», % (100 — автоподбор по длине ника)
-  font: null, // свой шрифт ника {id, name}; null — стандартный
+  place: null, // «Положение надписи» {x, y, r}: сдвиг (% ширины места надписи) и поворот, °; null — по центру
+  font: null, // шрифт ника {id, name}: готовый (app/data/fonts) или свой загруженный; null — стандартный
+  // «Градиент» {a, b, angle, on}: два цвета, угол (как в CSS) и на что он ложится — 'text' ник, 'logo', 'fill'
+  // заливка; пустой on — градиент выключен (цвета запоминаются, чтобы при включении не подбирать их заново)
+  grad: null,
   // свои настройки отдельных стикеров поверх общих: id шаблона → {text?, logo?, color?, stroke?, size?, edit?}
   // edit — правки продвинутого редактора (Pro), бывают только у отдельных стикеров: части у шаблонов свои
   overrides: {},
+  targetPack: null, // готовый пак, в который сейчас добавляются шаблоны с главной
 };
 
-export const LOOK_KEYS = ['text', 'logo', 'color', 'stroke', 'size', 'font'];
+export const LOOK_KEYS = ['text', 'logo', 'color', 'stroke', 'size', 'place', 'font', 'grad'];
+
+export const DEFAULT_GRAD = { a: '#2f7bff', b: '#8fd8ff', angle: 135, on: [] };
+const GRAD_ON = ['text', 'logo', 'fill'];
+
+/** «Градиент» из сохранённых настроек: {a, b, angle, on} в допустимых пределах или null. */
+export function cleanGradPref(g) {
+  if (!g || typeof g !== 'object' || !HEX.test(g.a) || !HEX.test(g.b)) return null;
+  const angle = Number.isFinite(Number(g.angle)) ? ((Math.round(Number(g.angle)) % 360) + 360) % 360 : DEFAULT_GRAD.angle;
+  const on = Array.isArray(g.on) ? GRAD_ON.filter((t) => g.on.includes(t)) : [];
+  return { a: g.a.toLowerCase(), b: g.b.toLowerCase(), angle, on };
+}
 
 /** Итоговые настройки стикера: свои, если заданы, иначе общие (+ правки редактора, если есть). */
 export function lookFor(id) {
@@ -88,6 +104,14 @@ export const fontInUse = (fontId) => Boolean(fontId) && (
   (state.font && state.font.id === fontId)
   || Object.values(state.overrides).some((o) => o.font && o.font.id === fontId));
 
+/** Свой шрифт удалён: убираем его отовсюду — там вернётся стандартный. */
+export function forgetFont(fontId) {
+  if (state.font && state.font.id === fontId) state.font = null;
+  Object.values(state.overrides).forEach((o) => { if (o.font && o.font.id === fontId) o.font = null; });
+  savePrefs();
+  bus.emit('personalization');
+}
+
 /** Используется ли логотип ещё где-то (общие настройки или отдельные стикеры). */
 export const logoInUse = (logoId) => Boolean(logoId) && (
   (state.logo && state.logo.id === logoId)
@@ -118,9 +142,22 @@ function ensureLogoVector(logo) {
   });
 }
 
-const cleanFont = (f) => (f && /^[0-9a-f]{32}$/.test(f.id) ? { id: f.id, name: String(f.name || 'шрифт').slice(0, 48) } : null);
+// шрифт ника: свой (32 hex) или готовый (id вида «montserrat»; есть ли такой — проверит сервер)
+const cleanFont = (f) => (f && /^(?:[0-9a-f]{32}|[a-z0-9-]{2,24})$/.test(f.id) ? { id: f.id, name: String(f.name || 'шрифт').slice(0, 48) } : null);
 
 const cleanSize = (v) => (Number.isFinite(v) ? Math.max(40, Math.min(160, Math.round(v))) : 100);
+
+/** «Положение надписи» из сохранённых настроек: {x, y, r} в допустимых пределах или null. */
+export function cleanPlace(p) {
+  if (!p || typeof p !== 'object') return null;
+  const lim = { x: 100, y: 100, r: 180 };
+  const out = {};
+  Object.keys(lim).forEach((k) => {
+    const v = Number(p[k]);
+    out[k] = Number.isFinite(v) ? Math.max(-lim[k], Math.min(lim[k], Math.round(v))) : 0;
+  });
+  return out.x || out.y || out.r ? out : null;
+}
 
 const cleanLogo = (logo) => (logo && /^[0-9a-f]{32}$/.test(logo.id) && typeof logo.thumb === 'string'
   && logo.thumb.startsWith('data:image/png;base64,')
@@ -157,7 +194,9 @@ export function loadPrefs() {
     if (HEX.test(p.color)) state.color = p.color;
     if (HEX.test(p.stroke)) state.stroke = p.stroke;
     state.size = cleanSize(p.size);
+    state.place = cleanPlace(p.place);
     state.font = cleanFont(p.font);
+    state.grad = cleanGradPref(p.grad);
     state.logo = cleanLogo(p.logo);
     ensureLogoVector(state.logo);
     // свои настройки — только у стикеров, которые всё ещё выбраны
@@ -170,7 +209,9 @@ export function loadPrefs() {
         if ('color' in raw) own.color = HEX.test(raw.color) ? raw.color : null;
         if ('stroke' in raw) own.stroke = HEX.test(raw.stroke) ? raw.stroke : null;
         if ('size' in raw) own.size = cleanSize(raw.size);
+        if ('place' in raw) own.place = cleanPlace(raw.place);
         if ('font' in raw) own.font = cleanFont(raw.font);
+        if ('grad' in raw) own.grad = cleanGradPref(raw.grad);
         // правки редактора проверяет сервер; здесь только форма
         if (raw.edit && typeof raw.edit === 'object' && !Array.isArray(raw.edit)) own.edit = raw.edit;
         if ('logo' in raw) { own.logo = cleanLogo(raw.logo); ensureLogoVector(own.logo); }
@@ -182,18 +223,30 @@ export function loadPrefs() {
   }
 }
 
+let saveTimer = 0;
 export function savePrefs() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushPrefs, 150);
+}
+
+export function flushPrefs() {
+  clearTimeout(saveTimer);
   try {
-    const { category, type, selection, text, color, stroke, size, font } = state;
+    const { category, type, selection, text, color, stroke, size, place, font, grad } = state;
     const overrides = {};
     Object.entries(state.overrides).forEach(([id, own]) => {
       overrides[id] = { ...own };
       if ('logo' in own) overrides[id].logo = logoMeta(own.logo);
     });
     localStorage.setItem(prefsKey(), JSON.stringify({
-      category, type, selection, text, color, stroke, size, font, logo: logoMeta(state.logo), overrides,
+      category, type, selection, text, color, stroke, size, place, font, grad, logo: logoMeta(state.logo), overrides,
     }));
   } catch {}
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', flushPrefs, { passive: true });
+  window.addEventListener('pagehide', flushPrefs, { passive: true });
 }
 
 // ── профиль
@@ -220,13 +273,13 @@ export function toggleSelection(id) {
     state.selection.splice(i, 1);
     delete state.overrides[id];
     savePrefs();
-    bus.emit('selection');
+    bus.emit('selection', { id, action: 'removed', selected: false });
     return 'removed';
   }
   if (state.selection.length >= limitFor(state.type)) return 'limit';
   state.selection.push(id);
   savePrefs();
-  bus.emit('selection');
+  bus.emit('selection', { id, action: 'added', selected: true });
   return 'added';
 }
 
@@ -258,5 +311,30 @@ export function priceFor(qty) {
   const p = state.pricing;
   if (!p) return 0;
   const q = Math.max(1, Math.min(qty, p.max_qty));
-  return p.totals[q];
+  let total = p.totals[q];
+  const disc = (state.me && state.me.discount_pct) || 0;
+  if (disc > 0) {
+    total = Math.max(1, Math.round(total * (100 - Math.min(99, disc)) / 100));
+  }
+  return total;
+}
+
+/** Сколько Stars спишет Telegram за сумму в ₽ (как на сервере: вверх до целого). */
+export function starsFor(total) {
+  const rate = (state.pricing && state.pricing.rub_per_star) || 1;
+  return Math.max(1, Math.ceil(Math.round((total / rate) * 1e6) / 1e6));
+}
+
+export function starsForQty(qty) {
+  const p = state.pricing;
+  if (!p) return 0;
+  const disc = (state.me && state.me.discount_pct) || 0;
+  if (disc > 0) {
+    return starsFor(priceFor(qty));
+  }
+  const q = Math.max(1, Math.min(qty, p.max_qty));
+  if (p.stars_totals && p.stars_totals[q] !== undefined) {
+    return p.stars_totals[q];
+  }
+  return starsFor(p.totals[q]);
 }

@@ -1,6 +1,6 @@
 // Покупка генераций, как витрина магазина: сетка карточек-пакетов (анимированный эмодзи, название, цена,
 // выгода и полоска), снизу — плавающая панель «− N +» и «Купить · N ₽», которая открывает шторку
-// со способами оплаты списком (Звёзды, СБП, xRocket, CryptoBot).
+// со способами оплаты списком (Звёзды, xRocket, CryptoBot, СБП).
 // Цены — только из state.pricing (сервер, app/pricing.py), клиент ничего не пересчитывает сам.
 import { payFor } from '../billing.js';
 import { BigEmoji, CloseButton } from '../components.js';
@@ -8,16 +8,34 @@ import { openOverlay } from '../nav.js';
 import { bus, priceFor, state } from '../store.js';
 import { haptic, openLink } from '../tg.js';
 import { gens, h, icon, plural, prefersReducedMotion, rub, toast } from '../ui.js';
+import { openPromo } from './promo.js';
+import { TgsPreview } from '../tgs.js';
 
-// эмодзи карточек по порядку пакетов: от маленького к большому
-const PACK_EMOJI = ['sparkle', 'fire', 'gift', 'party', 'gem', 'crown'];
-// цвет свечения за эмодзи карточки
-const PACK_GLOW = ['#ffc83d', '#ff6a2b', '#ff4d4d', '#ff5fd2', '#55b8ff', '#ffb92e'];
+// TGS-шаблоны карточек пакетов по порядку (от маленького к большому)
+export const PACK_LOOKS = [
+  { id: 'love-006', emoji: 'sparkle', glow: '#c084fc' },    // 5: хрустальный куб с сердечком
+  { id: 'finance-009', emoji: 'fire', glow: '#f97316' },   // 10: золотая монета с кольцом
+  { id: 'gift-033', emoji: 'gift', glow: '#ef4444' },      // 20: синий персонаж в обнимку с сердцем
+  { id: 'love-022', emoji: 'party', glow: '#ec4899' },     // 30: розовый мишка с сердцем
+  { id: 'gift-030', emoji: 'gem', glow: '#06b6d4' },       // 50: чаша с сияющими алмазами
+  { id: 'classic-055', emoji: 'crown', glow: '#eab308' },   // 100: королевская корона
+];
 
-/** Эмодзи и цвет свечения пакета — одинаковые на экране покупки и в профиле. */
+const BY_QTY = {
+  5: PACK_LOOKS[0],
+  10: PACK_LOOKS[1],
+  20: PACK_LOOKS[2],
+  30: PACK_LOOKS[3],
+  50: PACK_LOOKS[4],
+  100: PACK_LOOKS[5],
+};
+
+/** TGS-шаблон и цвет свечения пакета — одинаковые на экране покупки и в профиле. */
 export function packLook(qty) {
-  const i = Math.max(0, presets().indexOf(qty));
-  return { emoji: PACK_EMOJI[i % PACK_EMOJI.length], glow: PACK_GLOW[i % PACK_GLOW.length] };
+  if (qty in BY_QTY) return BY_QTY[qty];
+  const p = presets();
+  const i = Math.max(0, p.indexOf(qty));
+  return PACK_LOOKS[i % PACK_LOOKS.length];
 }
 
 /** Пакеты: 5, 10, 20, порог скидки, порог оптовой цены, 100 — в пределах max_qty. */
@@ -30,6 +48,8 @@ export function presets() {
 
 /** Бейдж пакета: оптовая цена или скидка. */
 export function presetBadge(qty) {
+  const userDisc = (state.me && state.me.discount_pct) || 0;
+  if (userDisc > 0) return { text: `−${userDisc}% промо`, tone: 'sale' };
   const p = state.pricing;
   if (qty >= p.bulk_from) return { text: 'Выгодно', tone: 'best' };
   if (qty >= p.discount_from) return { text: `−${p.discount_pct}%`, tone: 'sale' };
@@ -37,8 +57,8 @@ export function presetBadge(qty) {
 }
 
 /** Сколько Stars спишет Telegram за сумму в ₽ (как на сервере: вверх до целого). */
-function starsFor(total) {
-  const rate = state.pricing.rub_per_star || 1;
+export function starsFor(total) {
+  const rate = (state.pricing && state.pricing.rub_per_star) || 1;
   return Math.max(1, Math.ceil(Math.round((total / rate) * 1e6) / 1e6));
 }
 
@@ -48,7 +68,12 @@ const termsNote = () => h('p', { class: 'buy__terms' }, 'Нажимая на с�
 
 /** Шторка «Выберите способ оплаты»: строки с иконкой, названием и подписью; нажатие сразу ведёт к оплате. */
 export function openPayMethods({ qty, onPaid }) {
-  const methods = state.pricing.methods || [{ id: 'stars', title: 'Звёзды', sub: '', enabled: true }];
+  const methods = state.pricing.methods || [
+    { id: 'stars', title: 'Звёзды', sub: '', enabled: true },
+    { id: 'xrocket', title: 'xRocket', sub: 'USDT, TON и другие монеты', enabled: true },
+    { id: 'cryptobot', title: 'CryptoBot', sub: 'Оплата криптовалютой', enabled: true },
+    { id: 'sbp', title: 'СБП', sub: 'Через приложение банка', enabled: false },
+  ];
   const total = priceFor(qty);
   openOverlay({
     kind: 'sheet', label: 'способ оплаты', className: 'sheet--pay',
@@ -75,7 +100,7 @@ export function openPayMethods({ qty, onPaid }) {
             }
           },
         },
-        h('img', { class: 'pmrow__icon', src: `/assets/pay/${m.id}.webp`, alt: '', draggable: 'false' }),
+        h('img', { class: 'pmrow__icon', src: `/assets/pay/${m.id}.webp?v=7`, alt: '', draggable: 'false' }),
         h('span', { class: 'pmrow__text' }, h('b', null, m.title), h('span', null, sub)),
         m.enabled ? h('span', { class: 'pmrow__go' }, h('i', { class: 'pmrow__spin', 'aria-hidden': 'true' }), icon('chev-right', 'pmrow__chev'))
           : h('span', { class: 'pmrow__soon' }, 'Скоро'));
@@ -142,23 +167,30 @@ export function openBuy({ qty } = {}) {
     kind: 'screen',
     label: 'покупка генераций',
     className: 'layer--buy',
-    onClose: () => off(),
+    onClose: () => {
+      off();
+      tgsList.forEach((t) => t.destroy());
+    },
     render: ({ close }) => {
       const p = state.pricing;
       const packs = presets();
       const biggest = packs[packs.length - 1];
       let current = Math.min(Math.max(qty || p.default_qty, 1), p.max_qty);
 
-      // ── сетка пакетов
+      // ── сетка пакетов (в рублях)
+      const tgsList = [];
       const cards = packs.map((q, i) => {
         const badge = presetBadge(q);
-        return h('button', { class: 'bcard', type: 'button', dataset: { qty: String(q) }, style: { '--i': String(i), '--glow': PACK_GLOW[i % PACK_GLOW.length] }, onclick: () => {
+        const look = packLook(q);
+        const tgs = TgsPreview(look.id, { autoplay: true, cls: 'bcard__tgs' });
+        tgsList.push(tgs);
+        return h('button', { class: 'bcard', type: 'button', dataset: { qty: String(q) }, style: { '--i': String(i), '--glow': look.glow }, onclick: () => {
           if (q === current) return;
           haptic.select();
           current = q;
           paint();
         } },
-        BigEmoji(PACK_EMOJI[i % PACK_EMOJI.length], 'bcard__emoji'),
+        tgs.el,
         badge ? h('span', { class: `bcard__badge bcard__badge--${badge.tone}` }, badge.text) : null,
         h('b', { class: 'bcard__title' }, gens(q)),
         h('span', { class: 'bcard__row' },
@@ -191,13 +223,23 @@ export function openBuy({ qty } = {}) {
       paint();
       off = bus.on('me', () => { balance.textContent = String(state.me.balance); });
 
+      const methods = (p.methods || []).filter((m) => m.enabled);
       return [
         CloseButton(close),
         h('div', { class: 'buy' },
           h('header', { class: 'buy__head' },
-            h('h1', { class: 'buy__title' }, 'Генерации'),
-            h('p', { class: 'buy__sub' }, 'На балансе ', balance, ' ✦ · ', h('em', null, `−${p.discount_pct}% от ${p.discount_from} шт`))),
+            h('h1', { class: 'buy__title' }, 'Пополнить баланс'),
+            h('p', { class: 'buy__sub' }, '1 генерация = 1 эмодзи или стикер · не сгорают')),
+          h('div', { class: 'bwallet' },
+            h('span', { class: 'bwallet__label' }, 'На балансе'),
+            h('b', { class: 'bwallet__value' }, balance, icon('gens', 'bwallet__spark')),
+            h('span', { class: 'bwallet__perk' }, (state.me && state.me.discount_pct) ? `🎟 Скидка по промокоду: −${state.me.discount_pct}%` : `−${p.discount_pct}% от ${p.discount_from} шт · опт от ${p.bulk_from} шт`)),
           h('div', { class: 'bgrid' }, ...cards),
+          h('div', { class: 'bextra' },
+            h('span', { class: 'vpay' },
+              h('span', { class: 'vpay__icons' }, ...methods.map((m) => h('img', { class: `vpay__icon vpay__icon--${m.id}`, src: `/assets/pay/${m.id}.webp?v=7`, alt: m.title, draggable: 'false' }))),
+              h('span', { class: 'vpay__text' }, methods.map((m) => m.title).join(' · '))),
+            h('button', { class: 'vpromo', type: 'button', onclick: () => { haptic.tap(); openPromo(); } }, icon('gift'), 'Промокод')),
           h('p', { class: 'buy__terms buy__terms--center' }, 'Покупая, вы принимаете ', docLink('/docs/terms.html', 'условия'), ' и ', docLink('/docs/refund.html', 'правила возврата')),
           h('div', { class: 'buy__bottom' },
             h('div', { class: 'bbar' }, h('div', { class: 'bbar__stepper' }, minus, count, plus), buyBtn))),

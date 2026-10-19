@@ -1,4 +1,4 @@
-"""Свой шрифт пользователя для ника: загрузка, проверка, хранение.
+"""Шрифты ника: 15 готовых (app/data/fonts, Google Fonts) и свои шрифты пользователя — загрузка, проверка, хранение.
 
 Ник в TGS — контуры букв, поэтому шрифт нужен с контурами TrueType (таблица glyf): обычный .ttf. OpenType
 с контурами CFF (.otf) наш разборщик (app/fonts.py) не читает — такой файл отклоняем с понятной ошибкой.
@@ -21,6 +21,36 @@ from .services import ValidationFailed, clean_text, now
 FONT_ID = re.compile(r"^[0-9a-f]{32}\Z")
 PROBE = "Ezz Ник 123"
 
+# готовые шрифты: id (= имя файла в app/data/fonts), название и характер — для витрины выбора шрифта.
+# Их может выбрать любой пользователь, в квоту своих шрифтов они не входят
+PRESET_DIR = Path(__file__).resolve().parent / "data" / "fonts"
+PRESETS = (
+    ("montserrat", "Montserrat", "гротеск"),
+    ("unbounded", "Unbounded", "широкий"),
+    ("dela-gothic", "Dela Gothic", "плакат"),
+    ("russo", "Russo One", "спорт"),
+    ("rubik-mono", "Rubik Mono", "блок"),
+    ("oswald", "Oswald", "узкий"),
+    ("exo", "Exo 2", "техно"),
+    ("comfortaa", "Comfortaa", "округлый"),
+    ("nunito", "Nunito", "мягкий"),
+    ("press-start", "Press Start", "пиксели"),
+    ("lobster", "Lobster", "ретро"),
+    ("pacifico", "Pacifico", "кисть"),
+    ("caveat", "Caveat", "от руки"),
+    ("playfair", "Playfair", "антиква"),
+    ("rubik-bubbles", "Rubik Bubbles", "пузыри"),
+)
+PRESET_IDS = frozenset(p[0] for p in PRESETS)
+
+
+def is_preset(font_id: str | None) -> bool:
+    return font_id in PRESET_IDS
+
+
+def presets() -> list[dict]:
+    return [{"id": fid, "name": name, "tag": tag} for fid, name, tag in PRESETS]
+
 
 def _check(data: bytes) -> None:
     if data[:4] == b"OTTO":
@@ -41,7 +71,10 @@ def _check(data: bytes) -> None:
 
 
 def font_path(settings: Settings, font_id: str | None) -> Path | None:
-    """Путь к файлу шрифта или None (нет id, кривой id или файла уже нет)."""
+    """Путь к файлу шрифта (готового или своего) или None (нет id, кривой id или файла уже нет)."""
+    if is_preset(font_id):
+        path = PRESET_DIR / f"{font_id}.ttf"
+        return path if path.is_file() else None
     if not font_id or not FONT_ID.match(font_id):
         return None
     path = Path(settings.fonts_dir) / f"{font_id}.ttf"
@@ -57,15 +90,32 @@ async def save_font(db: Database, settings: Settings, user_id: int, filename: st
     await asyncio.to_thread(_check, data)
     font_id = uuid.uuid4().hex
     Path(settings.fonts_dir).mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread((Path(settings.fonts_dir) / f"{font_id}.ttf").write_bytes, data)
+    path = Path(settings.fonts_dir) / f"{font_id}.ttf"
+    await asyncio.to_thread(path.write_bytes, data)
     name = clean_text(Path(filename or "font").stem, 48) or "шрифт"
-    async with db.tx() as t:
-        await t.execute("INSERT INTO fonts (id, user_id, name, created_at) VALUES (?,?,?,?)",
-                        (font_id, user_id, name, now()))
+    try:
+        async with db.tx() as t:
+            # квоту проверяем ещё раз в той же транзакции: параллельные загрузки не должны её обойти
+            count = await t.fetchone("SELECT COUNT(*) AS n FROM fonts WHERE user_id=?", (user_id,))
+            if count["n"] >= settings.fonts_max:
+                raise ValidationFailed("font_quota")
+            await t.execute("INSERT INTO fonts (id, user_id, name, created_at) VALUES (?,?,?,?)",
+                            (font_id, user_id, name, now()))
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return {"id": font_id, "name": name}
 
 
+async def list_fonts(db: Database, user_id: int) -> list[dict]:
+    rows = await db.fetchall("SELECT id, name FROM fonts WHERE user_id=? ORDER BY created_at", (user_id,))
+    return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+
 async def owns(db: Database, user_id: int, font_id: str) -> bool:
+    """Шрифт можно ставить: готовый — любому, свой — только владельцу."""
+    if is_preset(font_id):
+        return True
     row = await db.fetchone("SELECT 1 FROM fonts WHERE id=? AND user_id=?", (font_id, user_id))
     return row is not None
 

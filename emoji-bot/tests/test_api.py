@@ -78,9 +78,10 @@ def test_onboarding_flag_is_server_side(client):
 def test_catalog_is_read_from_template_files(client):
     cats = client.get("/api/categories").json()
     assert {c["name"]: c["count"] for c in cats["categories"]} == {
-        "классика": 144, "персонажи": 58, "подарки": 34, "любовь": 27, "финансы": 17, "особые": 16, "флаги": 8, "разное": 39}
-    assert cats["total"] == 343
-    assert cats["categories"][0]["cover"] == "classic-001"
+        "NEW": 20, "классика": 144, "персонажи": 58, "подарки": 34, "любовь": 27, "финансы": 17, "особые": 16, "флаги": 8,
+        "разное": 39}
+    assert cats["total"] == 363
+    assert cats["categories"][0]["cover"] == "new-001"  # новые шаблоны — первой категорией
     p1 = client.get("/api/templates?category=other&page=1").json()
     p2 = client.get("/api/templates?category=other&page=2").json()
     assert (p1["pages"], len(p1["items"]), len(p2["items"])) == (2, 30, 9)
@@ -145,6 +146,37 @@ def test_pack_idempotency_key(client):
     assert client.get("/api/me", headers=dev(250)).json()["balance"] == 0
     assert len(client.get("/api/packs", headers=dev(250)).json()["packs"]) == 1
     assert client.post("/api/packs", json=body, headers={**dev(251), "Idempotency-Key": "x"}).status_code == 422
+
+
+def test_delete_pack(client):
+    user = dev(260)
+    body = {"type": "emoji", "template_ids": ["classic-001"]}
+    r = client.post("/api/packs", json=body, headers=user)
+    assert r.status_code == 201
+    pack_id = r.json()["id"]
+
+    # Удаление во время processing запрещено
+    del_proc = client.delete(f"/api/packs/{pack_id}", headers=user)
+    assert del_proc.status_code == 422
+
+    # Дожидаемся готовности
+    pack = wait_ready(client, pack_id, user)
+    assert pack["status"] == "ready"
+
+    # Чужой пользователь не может удалить пак
+    other = dev(261)
+    assert client.delete(f"/api/packs/{pack_id}", headers=other).status_code == 404
+
+    # Успешное удаление своим пользователем
+    res = client.delete(f"/api/packs/{pack_id}", headers=user)
+    assert res.status_code == 200 and res.json() == {"ok": True}
+
+    # Повторное удаление возвращает 404
+    assert client.delete(f"/api/packs/{pack_id}", headers=user).status_code == 404
+
+    # Пак больше не отдаётся в списке и по прямому ID
+    assert pack_id not in [p["id"] for p in client.get("/api/packs", headers=user).json()["packs"]]
+    assert client.get(f"/api/packs/{pack_id}", headers=user).status_code == 404
 
 
 def test_pack_requires_balance(client):
@@ -231,7 +263,7 @@ def test_billing_invoice_and_payment_polling(client):
     from dataclasses import replace
     client.app_state.ctx.settings = replace(client.app_state.ctx.settings, demo_mode=False, payments_live=True)
     r = client.post("/api/billing/invoice", json={"qty": 30}, headers=h)
-    assert r.status_code == 200 and r.json()["total"] == 135 and r.json()["stars"] == 108 and fake.calls[0][1:] == (30, 108)
+    assert r.status_code == 200 and r.json()["total"] == 135 and r.json()["stars"] == 52 and fake.calls[0][1:] == (30, 52)
     assert client.post("/api/billing/invoice", json={"qty": 5, "method": "sbp"}, headers=h).status_code == 503
     pid = r.json()["payment_id"]
     assert client.get(f"/api/billing/payments/{pid}", headers=h).json() == {"status": "pending"}

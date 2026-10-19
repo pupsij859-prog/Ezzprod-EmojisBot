@@ -121,7 +121,7 @@ def create_app(settings: Settings | None = None, *, with_bot: bool = True) -> Fa
             from aiogram.exceptions import TelegramNetworkError
 
             from .bot import TelegramNotifier, configure_bot, create_bot, create_dispatcher
-            from .payments import StarsProvider
+            from .payments import PaymentHub, StarsProvider
             from .reconcile import reconcile_loop
 
             bot = create_bot(settings)
@@ -148,7 +148,7 @@ def create_app(settings: Settings | None = None, *, with_bot: bool = True) -> Fa
                     try:
                         ctx.bot = bot
                         ctx.notifier = runner.notifier = TelegramNotifier(bot, ctx)
-                        ctx.payments = StarsProvider(bot, settings.brand_name)
+                        ctx.payments = PaymentHub(ctx.settings, bot, ctx.bot_username)
                         await configure_bot(bot, ctx)
                         break
                     except (TelegramNetworkError, OSError, asyncio.TimeoutError) as exc:

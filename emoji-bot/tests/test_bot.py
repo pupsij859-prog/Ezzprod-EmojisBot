@@ -9,7 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message, Update
 
 from app import services
-from app.bot import TelegramNotifier, create_dispatcher
+from app.bot import texts, TelegramNotifier, create_dispatcher
 from app.context import Context
 from tests.conftest import make_settings
 
@@ -17,14 +17,23 @@ TOKEN = "123456:TEST-TOKEN-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
 class FakeSession(AiohttpSession):
-    def __init__(self, refund_ok: bool = True):
+    def __init__(self, refund_ok: bool = True, rich_ok: bool = True):
         super().__init__()
         self.calls: list = []
         self.refund_ok = refund_ok
+        self.rich_ok = rich_ok
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
         name = type(method).__name__
+        if name == "SendRichMessage":
+            if not self.rich_ok:
+                from aiogram.exceptions import TelegramBadRequest
+                raise TelegramBadRequest(method=method, message="Bad Request: can't parse rich message")
+            photo = [{"file_id": "banner-file-id", "file_unique_id": "u", "width": 1280, "height": 580}]
+            return Message.model_validate({"message_id": 1, "date": int(time.time()),
+                                           "chat": {"id": method.chat_id, "type": "private"},
+                                           "rich_message": {"blocks": [{"type": "photo", "photo": photo}]}})
         if name in ("SendMessage", "SendPhoto"):
             body = {"message_id": 1, "date": int(time.time()), "chat": {"id": getattr(method, "chat_id", 1), "type": "private"}}
             if name == "SendPhoto":
@@ -68,16 +77,47 @@ async def env(tmp_path, db):
     await bot.session.close()
 
 
-async def test_start_sends_banner_with_webapp_button_and_registers_referral(env, db):
+async def test_start_sends_rich_message_with_banner_text_and_buttons_inside(env, db):
     dp, bot, ctx, session, settings = env
+    inviter, _ = await services.upsert_user(db, settings, {"id": 1, "first_name": "Boss"})
+    await dp.feed_update(bot, command(5, f"/start ref_{inviter['ref_code']}"))
+
+    (sent,) = session.sent("SendRichMessage")
+    page = sent.rich_message.html
+    assert page.startswith('<img src="tg://photo?id=banner"/>') and sent.rich_message.media[0].id == "banner"
+    assert "<p>" in page and "Привет, <b>" in page and "<tg-emoji emoji-id=" in page
+    rows = page.split("<tg-button-row>")[1:]
+    assert len(rows) == 2  # «Запустить бота» во всю ширину, ниже «Поддержка» и «Реф. ссылка»
+    assert 'type="web_app" style="primary" url="https://app.example.com"' in rows[0] and "Запустить бота" in rows[0]
+    assert f'url="https://t.me/{settings.support_username}"' in rows[1] and "Поддержка" in rows[1]
+    assert 'type="copy_text" text="https://t.me/ezzbot?start=ref_' in rows[1] and "Реф. ссылка" in rows[1]
+    assert not session.sent("SendPhoto")
+    assert ctx.banner_file_id == "banner-file-id"  # дальше баннер шлётся по file_id
+    assert (await services.get_user(db, 5))["referred_by"] == 1
+
+    await dp.feed_update(bot, command(6, "/start"))
+    assert session.sent("SendRichMessage")[1].rich_message.media[0].media.media == "banner-file-id"
+
+
+async def test_start_falls_back_to_photo_with_keyboard_when_rich_message_fails(env, db):
+    dp, bot, ctx, session, settings = env
+    session.rich_ok = False
     inviter, _ = await services.upsert_user(db, settings, {"id": 1, "first_name": "Boss"})
     await dp.feed_update(bot, command(5, f"/start ref_{inviter['ref_code']}"))
 
     photos = session.sent("SendPhoto")
     assert len(photos) == 1
-    button = photos[0].reply_markup.inline_keyboard[0][0]
-    assert button.text == "открыть редактор" and button.web_app.url == "https://app.example.com"
-    assert button.style == "success"  # цветная кнопка
+    keyboard = photos[0].reply_markup.inline_keyboard
+    button = keyboard[0][0]
+    assert button.text == "Запустить бота" and button.web_app.url == "https://app.example.com"
+    assert button.style == "primary" and button.icon_custom_emoji_id  # синяя кнопка с премиум-эмодзи
+    assert [len(r) for r in keyboard] == [1, 2]  # «Запустить» во всю ширину, ниже два рядом
+    support, ref = keyboard[1]
+    assert support.icon_custom_emoji_id and ref.icon_custom_emoji_id
+    assert support.text == "Поддержка" and support.url == f"https://t.me/{settings.support_username}"
+    assert ref.text == "Реф. ссылка" and ref.copy_text.text.startswith("https://t.me/ezzbot?start=ref_")
+    caption = photos[0].caption
+    assert "Привет, <b>" in caption and "<tg-emoji emoji-id=" in caption and photos[0].parse_mode == "HTML"
     assert ctx.banner_file_id == "banner-file-id"      # дальше баннер шлётся по file_id
     assert (await services.get_user(db, 5))["referred_by"] == 1
 
@@ -199,11 +239,12 @@ async def test_pack_ready_message_has_result_and_share_buttons(env):
     pack = {"title": "tg · эмодзи", "type": "emoji", "count": 3, "failed": 0, "link": link, "params": {"text": "tg"}}
     await ctx.notifier.pack_ready(5, pack)
     msg = session.sent("SendMessage")[-1]
-    assert msg.text.startswith("🥳 пак tg создан!")
+    assert msg.text.startswith("🥳 <b>пак «tg» готов!</b>")
     rows = msg.reply_markup.inline_keyboard
-    assert [r[0].text for r in rows] == ["посмотреть результат", "отправить другу"]
+    assert [r[0].text for r in rows] == [texts.BTN_VIEW_RESULT, texts.BTN_SEND_FRIEND, texts.BTN_MORE]
     assert rows[0][0].url == link
     assert rows[1][0].url.startswith("https://t.me/share/url?url=https%3A%2F%2Ft.me%2Faddemoji%2Fez1_abc123_by_ezzbot")
+    assert rows[2][0].web_app.url == ctx.webapp_url  # «собрать ещё» открывает редактор
 
 
 async def test_public_url_change_updates_start_button_and_menu(env, tmp_path):
@@ -219,7 +260,7 @@ async def test_public_url_change_updates_start_button_and_menu(env, tmp_path):
     assert await apply_url(ctx, "https://new-addr.lhr.life") is False   # тот же адрес — ничего не делаем
     assert session.sent("SetChatMenuButton")[-1].menu_button.web_app.url == "https://new-addr.lhr.life"
     await dp.feed_update(bot, command(9, "/start"))
-    assert session.sent("SendPhoto")[-1].reply_markup.inline_keyboard[0][0].web_app.url == "https://new-addr.lhr.life"
+    assert 'url="https://new-addr.lhr.life"' in session.sent("SendRichMessage")[-1].rich_message.html
 
 
 def test_start_banner_is_the_project_picture():

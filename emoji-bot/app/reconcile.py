@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from . import services
 from .context import Context
+from .notify import reward_sender
 
 log = logging.getLogger("ezzprod.reconcile")
 
@@ -65,7 +66,7 @@ async def reconcile_stars(ctx: Context, max_pages: int = 200) -> int:
                 log.warning("доначислен пропущенный платёж %s: user=%s qty=%s", payment.charge_id, payment.user_id, result.qty)
                 await _safe(ctx.notifier.payment_ok, result.user_id, result.qty, result.balance)
                 if result.reward_user_id:
-                    await _safe(ctx.notifier.referral_reward, result.reward_user_id, result.reward_amount)
+                    await _safe(reward_sender(ctx.notifier, result.reward_kind), result.reward_user_id, result.reward_amount)
             else:
                 log.error("платёж %s требует ручного разбора: user=%s amount=%s", payment.charge_id, payment.user_id, payment.amount)
                 await _safe(

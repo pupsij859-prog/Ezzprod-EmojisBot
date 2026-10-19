@@ -98,6 +98,53 @@ export function Chips(options, value, onChange) {
   return { el, set, counts };
 }
 
+/** Горизонтальная лента, которую с компьютера листают мышкой: перетаскиванием и колесом.
+ *  На телефоне ничего не меняется — там лента листается пальцем сама. */
+export function dragScroll(el) {
+  let start = null; // {x, left, id} — нажатие мышью
+  let moved = false;
+  let blockClickUntil = 0;
+  el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    start = { x: e.clientX, left: el.scrollLeft, id: e.pointerId };
+    moved = false;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    const dx = e.clientX - start.x;
+    if (!moved && Math.abs(dx) > 6) {
+      moved = true;
+      el.classList.add('is-dragging');
+      el.setPointerCapture(e.pointerId);
+    }
+    if (moved) el.scrollLeft = start.left - dx;
+  });
+  const end = () => {
+    if (!start) return;
+    if (moved) {
+      el.classList.remove('is-dragging');
+      blockClickUntil = Date.now() + 250; // отпускание после перетаскивания — не нажатие на карточку
+    }
+    start = null;
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  el.addEventListener('click', (e) => {
+    if (Date.now() < blockClickUntil) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  el.addEventListener('dragstart', (e) => e.preventDefault());
+  // колесо мыши крутит ленту вбок, пока ей есть куда ехать; дальше — прокрутка страницы
+  el.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    const max = el.scrollWidth - el.clientWidth;
+    if (max <= 1) return;
+    if ((e.deltaY < 0 && el.scrollLeft <= 0) || (e.deltaY > 0 && el.scrollLeft >= max - 1)) return;
+    e.preventDefault();
+    el.scrollBy({ left: e.deltaY * (e.deltaMode === 1 ? 32 : 1), behavior: 'auto' });
+  }, { passive: false });
+  return el;
+}
+
 /** Заголовок раздела слева и действие справа («Шаблоны · Классика >»). */
 export const SectionHead = (title, action) => h('div', { class: 'section-head' },
   h('h2', { class: 'section-head__title' }, title), action || null);

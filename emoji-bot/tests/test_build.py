@@ -98,9 +98,9 @@ def test_render_produces_valid_tgs(kind):
     assert '"ty": 2' not in raw and '"ty": 5' not in raw          # ни картинок, ни текстовых слоёв
     # заглушка «ezzprod» заменена: остались только наши слои, все — цвета пользователя или логотипа
     groups = lottie.word_groups(anim)
-    assert groups and all(not any(lottie._is_letter(i) and i.get("nm") != "ezz layer" for i in g["it"]) for g in groups)
+    assert groups and all(not any(lottie._is_letter(i) and i.get("nm") not in ("ezz layer", "ezz nick") for i in g["it"]) for g in groups)
     assert [round(c, 3) for c in [0x3d / 255, 0x6a / 255, 0x9e / 255]] in [
-        [round(c, 3) for c in i["c"]["k"][:3]] for g in groups for layer in g["it"] if layer.get("nm") == "ezz layer"
+        [round(c, 3) for c in i["c"]["k"][:3]] for g in groups for layer in g["it"] if layer.get("nm") in ("ezz layer", "ezz nick")
         for i in layer["it"] if i.get("ty") == "fl"]
 
 
@@ -269,7 +269,7 @@ def test_fill_recolors_body_and_stroke_recolors_outline_and_nick():
     assert [1.0, 0.0, 0.0] in fills and not any(lottie._near(c, blue) for c in fills)   # синий стал красным
     assert strokes and all(c == [0.0, 0.0, 0.0] for c in strokes if not lottie._near(c, white))
     assert not any(lottie._near(c, white) for c in strokes)                               # белые контуры — чёрные
-    nick = [i for g in lottie.word_groups(anim) for layer in g["it"] if layer.get("nm") == "ezz layer"
+    nick = [i for g in lottie.word_groups(anim) for layer in g["it"] if layer.get("nm") == "ezz nick"
             for i in layer["it"] if i.get("ty") == "fl"]
     assert nick and all(i["c"]["k"][:3] == [0.0, 0.0, 0.0] for i in nick)                 # ник — цветом обводки
     # без цветов шаблон не меняется

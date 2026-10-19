@@ -31,6 +31,8 @@ class ItemSpec:
     size: int = 100               # размер надписи, % (100 — автоподбор)
     edit_json: str = ""           # правки редактора (JSON) или пусто
     font_path: str = ""           # свой шрифт ника (app/user_fonts.py) или пусто — стандартный
+    place_json: str = ""          # сдвиг и поворот надписи {x, y, r} (JSON) или пусто — по центру
+    grad_json: str = ""           # градиент на ник/логотип/заливку (JSON, app/lottie.py → clean_grad) или пусто
 
 
 class Renderer(Protocol):
@@ -49,10 +51,12 @@ class TemplateRenderer:
         color = lottie.hex_to_rgb(spec.color)
         stroke = lottie.hex_to_rgb(spec.stroke)
         edit = json.loads(spec.edit_json) if spec.edit_json else None
+        place = json.loads(spec.place_json) if spec.place_json else None
+        grad = json.loads(spec.grad_json) if spec.grad_json else None
         data = b""
         for logo in (spec.logo_vectors or (None,)):
             base = lottie.personalize(anim, color=color, stroke=stroke, text=text, logo=logo,
-                                      size=lottie.text_size(spec.size))
+                                      size=lottie.text_size(spec.size), place=place, grad=grad)
             if edit:
                 _, data = editor.render(base, edit)
             else:

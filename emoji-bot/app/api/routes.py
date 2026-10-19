@@ -10,7 +10,7 @@ from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Reque
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from .. import catalog, emoji, pricing, runtime, services
+from .. import catalog, emoji, partners, pricing, runtime, services, subscription
 from ..auth import current_user
 from ..context import Context
 from ..ratelimit import limited
@@ -26,17 +26,47 @@ def ctx_of(request: Request) -> Context:
 
 
 async def user_row(request: Request, tg: dict = Depends(current_user)):
+    """Пользователь + бан/техработы + обязательная подписка (недавний результат проверки — из кэша)."""
+    return await _user(request, tg, check_subscription=True, fresh=False)
+
+
+async def user_row_fresh(request: Request, tg: dict = Depends(current_user)):
+    """Как user_row, но подписку спрашиваем у Telegram заново: старт приложения и кнопка «Проверить»."""
+    return await _user(request, tg, check_subscription=True, fresh=True)
+
+
+async def user_row_any(request: Request, tg: dict = Depends(current_user)):
+    """Как user_row, но без обязательной подписки: статус уже оплаченного счёта нужен всегда."""
+    return await _user(request, tg, check_subscription=False, fresh=False)
+
+
+async def _user(request: Request, tg: dict, *, check_subscription: bool, fresh: bool):
     c = ctx_of(request)
     ref = None
     m = REF_PARAM.match(tg.get("_start_param", ""))  # ссылка вида t.me/<bot>?startapp=ref_xxxxxxxx
     if m:
         ref = m.group(1)
-    row, _ = await services.upsert_user(c.db, c.settings, tg, ref)
+    partner = partners.code_from_param(tg.get("_start_param"))  # партнёрская: startapp=p_<код>
+    row, created = await services.upsert_user(c.db, c.settings, tg, ref, partner)
+    if created and partner:
+        # переход засчитываем только новому: start_param приходит с каждым запросом сессии Mini App
+        await partners.count_click(c.db, partner)
+        reward = await partners.signup_reward(c.db, row["id"])
+        if reward:
+            await c.notifier.partner_reward(*reward)
     if not runtime.is_admin(c, row["id"]):
         if row["banned"]:
             raise HTTPException(403, {"code": "banned"})
         if c.maintenance:
             raise HTTPException(503, {"code": "maintenance"})
+        if not check_subscription:
+            return row
+        try:
+            subscribed = await subscription.check(c, row["id"], fresh=fresh)
+        except subscription.CheckUnavailable:
+            raise HTTPException(503, subscription.payload(c, unavailable=True)) from None
+        if not subscribed:
+            raise HTTPException(403, subscription.payload(c))
     return row
 
 
@@ -59,6 +89,7 @@ def _me_payload(c: Context, row) -> dict[str, Any]:
         "support_url": c.support_url,
         "referral_reward": s.referral_reward,
         "is_admin": runtime.is_admin(c, row["id"]),
+        "discount_pct": row["discount_pct"] if "discount_pct" in row.keys() else 0,
         "limits": {
             "emoji_pack_max": s.emoji_pack_max,
             "sticker_pack_max": s.sticker_pack_max,
@@ -73,7 +104,7 @@ def _me_payload(c: Context, row) -> dict[str, Any]:
 # ───────────── профиль / онбординг ─────────────
 
 @router.get("/me")
-async def me(request: Request, row=Depends(user_row)):
+async def me(request: Request, row=Depends(user_row_fresh)):
     return _me_payload(ctx_of(request), row)
 
 
@@ -81,6 +112,21 @@ async def me(request: Request, row=Depends(user_row)):
 async def onboarding_complete(request: Request, row=Depends(user_row)):
     await services.complete_onboarding(ctx_of(request).db, row["id"])
     return {"ok": True}
+
+
+# ───────────── промокоды ─────────────
+
+class PromoIn(BaseModel):
+    code: str = Field(min_length=1, max_length=40)
+
+
+@router.post("/promo", dependencies=[Depends(limited("promo", 8, 60))])
+async def redeem_promo(body: PromoIn, request: Request, row=Depends(user_row)):
+    try:
+        res = await runtime.redeem_promo(ctx_of(request).db, row["id"], body.code)
+    except runtime.PromoError as exc:
+        raise HTTPException(400, {"code": "promo", "reason": exc.reason}) from None
+    return {"gens": res.gens, "balance": res.balance, "discount_pct": res.discount_pct}
 
 
 # ───────────── каталог ─────────────
@@ -122,10 +168,10 @@ class GlyphsIn(BaseModel):
 
 
 async def own_font_path(c: Context, user_id: int, font_id: str | None):
-    """Путь к своему шрифту пользователя или None (стандартный). Чужой или неизвестный id — 404."""
+    """Путь к шрифту ника (готовому или своему) или None (стандартный). Чужой или неизвестный id — 404."""
     from .. import user_fonts
 
-    font_id = services.clean_logo_id(font_id, "font")
+    font_id = services.clean_font_id(font_id)
     if font_id is None:
         return None
     path = user_fonts.font_path(c.settings, font_id) if await user_fonts.owns(c.db, user_id, font_id) else None
@@ -148,6 +194,15 @@ async def glyphs(body: GlyphsIn, request: Request, row=Depends(user_row)):
 
 
 # ───────────── свой шрифт ника ─────────────
+
+@router.get("/fonts")
+async def list_fonts(request: Request, row=Depends(user_row)):
+    """Витрина шрифтов: готовые (для всех) и свои загруженные; max — сколько своих можно держать."""
+    from .. import user_fonts
+
+    c = ctx_of(request)
+    return {"presets": user_fonts.presets(), "own": await user_fonts.list_fonts(c.db, row["id"]), "max": c.settings.fonts_max}
+
 
 @router.post("/fonts", status_code=201, dependencies=[Depends(limited("fonts", 10, 60))])
 async def upload_font(request: Request, file: UploadFile = File(...), row=Depends(user_row)):
@@ -191,6 +246,8 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
     text = services.clean_text(body.get("text"), c.settings.text_max)
     color, stroke = services.clean_color(body.get("color")), services.clean_color(body.get("stroke"))
     size = services.clean_size(body.get("size"))
+    place = services.clean_place(body.get("place"))
+    grad = services.clean_grad(body.get("grad"))
     edit = services.clean_edit(body.get("edit"))
     font = await own_font_path(c, row["id"], body.get("font_id"))
     logo = None
@@ -203,7 +260,8 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
     def build() -> bytes:
         drawing = fonts.text_drawing(text, font) if text else None
         base = lottie.personalize(lottie.load(tpl.path), color=lottie.hex_to_rgb(color), stroke=lottie.hex_to_rgb(stroke),
-                                  text=drawing, logo=logo, size=lottie.text_size(size))
+                                  text=drawing, logo=logo, size=lottie.text_size(size), place=place,
+                                  grad=grad)
         out, data = editor.render(base, edit, mark=True)
         return editor.gzip_json({
             "anim": out,
@@ -295,6 +353,38 @@ async def pack(pack_id: int, request: Request, row=Depends(user_row)):
     return services.pack_view(found)
 
 
+@router.delete("/packs/{pack_id}")
+async def delete_pack(pack_id: int, request: Request, row=Depends(user_row)):
+    c = ctx_of(request)
+    if not await services.delete_pack(c.db, row["id"], pack_id):
+        raise HTTPException(404, {"code": "no_pack"})
+    return {"ok": True}
+
+
+class AddPackItemsIn(BaseModel):
+    template_ids: list[str] = Field(min_length=1, max_length=100)
+    overrides: dict[str, Any] | None = None
+    params: dict[str, Any] | None = None
+
+
+@router.post("/packs/{pack_id}/items", dependencies=[Depends(limited("packs", 20, 60))])
+async def add_pack_items(pack_id: int, body: AddPackItemsIn, request: Request, row=Depends(user_row)):
+    c = ctx_of(request)
+    pack = await services.add_pack_items(
+        c.db, c.settings, row["id"], pack_id, body.template_ids, overrides=body.overrides, params=body.params
+    )
+    duration = c.builder.estimate_seconds(len(body.template_ids))
+    c.runner.start(pack_id, duration)
+    return pack
+
+
+@router.delete("/packs/{pack_id}/items/{template_id}")
+async def delete_pack_item(pack_id: int, template_id: str, request: Request, row=Depends(user_row)):
+    c = ctx_of(request)
+    bot = getattr(c, "bot", None)
+    return await services.delete_pack_item(c.db, c.settings, row["id"], pack_id, template_id, bot=bot)
+
+
 # ───────────── сохранённые стили (pro) ─────────────
 
 @router.get("/styles")
@@ -352,20 +442,137 @@ async def create_invoice(body: InvoiceIn, request: Request, row=Depends(user_row
         raise HTTPException(503, {"code": "method_unavailable"})
     if c.payments is None or not c.settings.payments_live or c.settings.demo_mode:
         raise HTTPException(503, {"code": "payments_unavailable"})
-    q = pricing.quote(c.settings, body.qty)
-    payment_id = await services.create_payment(c.db, row["id"], q.qty, q.stars)
-    url = await c.payments.create_invoice(payment_id=payment_id, qty=q.qty, amount=q.stars)
-    return {"url": url, "payment_id": payment_id, "total": q.total, "stars": q.stars}
+    disc = row["discount_pct"] if "discount_pct" in row.keys() else 0
+    q = pricing.quote(c.settings, body.qty, user_discount_pct=disc)
+    payment_id = await services.create_payment(
+        c.db, row["id"], q.qty, q.stars, method=body.method, amount_rub=q.total
+    )
+    if hasattr(c.payments, "create_invoice"):
+        try:
+            res = await c.payments.create_invoice(
+                method=body.method, payment_id=payment_id, qty=q.qty, stars=q.stars, amount_rub=q.total
+            )
+        except TypeError:
+            res = await c.payments.create_invoice(payment_id=payment_id, qty=q.qty, amount=q.stars)
+        except RuntimeError as exc:
+            log.warning("create_invoice error: %s", exc)
+            raise HTTPException(503, {"code": "method_unavailable", "detail": str(exc)})
+        url = res["url"] if isinstance(res, dict) else res
+        ext_id = res.get("external_id") if isinstance(res, dict) else None
+        if ext_id:
+            await services.set_payment_external_id(c.db, payment_id, ext_id)
+    else:
+        # запасной случай (если подсунут старый провайдер напрямую)
+        url = await c.payments.create_invoice(payment_id=payment_id, qty=q.qty, amount=q.stars)
+    return {"url": url, "payment_id": payment_id, "method": body.method, "total": q.total, "stars": q.stars}
+
+
+@router.post("/billing/webhook/cryptobot")
+async def cryptobot_webhook(request: Request):
+    """Вебхук от Crypto Pay (@CryptoBot) при оплате счёта."""
+    c = ctx_of(request)
+    hub = c.payments
+    provider = getattr(hub, "cryptobot", None)
+    if provider is None or not getattr(provider, "is_configured", False):
+        raise HTTPException(503, "CryptoBot not configured")
+    sig = request.headers.get("crypto-pay-api-signature", "")
+    body_bytes = await request.body()
+    if not provider.verify_webhook(body_bytes, sig):
+        raise HTTPException(403, "Invalid signature")
+    try:
+        data = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(400, "Bad JSON")
+    if data.get("update_type") == "invoice_paid":
+        inv = data.get("payload", {})
+        payment_id = inv.get("payload")
+        invoice_id = str(inv.get("invoice_id"))
+        amount = inv.get("amount", 0)
+        currency = inv.get("fiat") or inv.get("paid_asset") or "RUB"
+        if payment_id:
+            order = await services.get_payment(c.db, payment_id)
+            if order:
+                result = await services.settle_payment(
+                    c.db, c.settings, payment_id, f"cb_{invoice_id}", amount, order["user_id"],
+                    currency=currency, provider="cryptobot",
+                )
+                if result and result.status == "credited" and c.notifier:
+                    await c.notifier.payment_ok(result.user_id, result.qty, result.balance)
+    return {"ok": True}
+
+
+@router.post("/billing/webhook/xrocket")
+async def xrocket_webhook(request: Request):
+    """Вебхук от xRocket Pay (@xrocket / Ton Rocket)."""
+    c = ctx_of(request)
+    hub = c.payments
+    provider = getattr(hub, "xrocket", None)
+    if provider is None or not getattr(provider, "is_configured", False):
+        raise HTTPException(503, "xRocket not configured")
+    sig = request.headers.get("rocket-pay-signature", "")
+    body_bytes = await request.body()
+    if not provider.verify_webhook(body_bytes, sig):
+        raise HTTPException(403, "Invalid signature")
+    try:
+        data = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(400, "Bad JSON")
+    if data.get("type") in ("invoicePay", "invoice_paid"):
+        inv = data.get("data", {})
+        payment_id = inv.get("payload") or inv.get("customData")
+        invoice_id = str(inv.get("id"))
+        amount = inv.get("amount", 0)
+        currency = inv.get("currency") or "USDT"
+        if payment_id:
+            order = await services.get_payment(c.db, payment_id)
+            if order:
+                result = await services.settle_payment(
+                    c.db, c.settings, payment_id, f"xr_{invoice_id}", amount, order["user_id"],
+                    currency=currency, provider="xrocket",
+                )
+                if result and result.status == "credited" and c.notifier:
+                    await c.notifier.payment_ok(result.user_id, result.qty, result.balance)
+    return {"ok": True}
 
 
 @router.get("/billing/payments/{payment_id}")
-async def payment_state(payment_id: str, request: Request, row=Depends(user_row)):
+async def payment_state(payment_id: str, request: Request, row=Depends(user_row_any)):
     """Клиент опрашивает после закрытия окна оплаты: статус 'paid' значит, что генерации уже начислены."""
     if not re.fullmatch(r"[0-9a-f]{32}", payment_id):
         raise HTTPException(404, {"code": "no_payment"})
-    status = await services.payment_status(ctx_of(request).db, row["id"], payment_id)
+    c = ctx_of(request)
+    status = await services.payment_status(c.db, row["id"], payment_id)
     if status is None:
         raise HTTPException(404, {"code": "no_payment"})
+    # Фоновая сверка: если вебхук задержался, опрашиваем провайдера напрямую
+    if status == "pending" and c.payments:
+        order = await services.get_payment(c.db, payment_id)
+        if order and "external_id" in order.keys() and order["external_id"]:
+            ext_id = order["external_id"]
+            method = order["method"] if "method" in order.keys() else "stars"
+            amount_rub = order["amount_rub"] if "amount_rub" in order.keys() else 0
+            if method == "cryptobot" and hasattr(c.payments, "cryptobot") and c.payments.cryptobot:
+                inv_status = await c.payments.cryptobot.check_invoice(ext_id)
+                if inv_status == "paid":
+                    result = await services.settle_payment(
+                        c.db, c.settings, payment_id, f"cb_{ext_id}", amount_rub,
+                        row["id"], currency="RUB", provider="cryptobot"
+                    )
+                    if result and result.status == "credited":
+                        status = "paid"
+                        if c.notifier:
+                            await c.notifier.payment_ok(result.user_id, result.qty, result.balance)
+            elif method == "xrocket" and hasattr(c.payments, "xrocket") and c.payments.xrocket:
+                inv_status = await c.payments.xrocket.check_invoice(ext_id)
+                if inv_status == "paid":
+                    result = await services.settle_payment(
+                        c.db, c.settings, payment_id, f"xr_{ext_id}", amount_rub,
+                        row["id"], currency="USDT", provider="xrocket"
+                    )
+                    if result and result.status == "credited":
+                        status = "paid"
+                        if c.notifier:
+                            await c.notifier.payment_ok(result.user_id, result.qty, result.balance)
     return {"status": status}
 
 
