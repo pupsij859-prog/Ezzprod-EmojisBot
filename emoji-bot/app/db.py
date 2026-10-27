@@ -216,6 +216,16 @@ ALTER TABLE users ADD COLUMN partner TEXT;
 ALTER TABLE users ADD COLUMN partner_rewarded INTEGER NOT NULL DEFAULT 2;
 CREATE INDEX IF NOT EXISTS idx_users_partner ON users (partner, created_at);
 """,
+    # v12: вход на сайте через Telegram Login Widget (app/web_login.py): в базе только хэш токена сессии
+    12: """
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id);
+""",
 }
 
 

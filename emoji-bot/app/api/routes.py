@@ -234,8 +234,7 @@ _render_latest: dict[int, int] = {}
 async def render_preview(request: Request, body: dict = Body(...), row=Depends(user_row)):
     """Продвинутый редактор (Pro): шаблон с ником, логотипом, цветами и правками → готовая анимация
     (тем же кодом, что собирает пак), список частей эмодзи, все цвета и проверка под требования Telegram."""
-    from .. import editor, fonts, lottie
-    from ..logos import load_vectors
+    from .. import lottie
 
     c = ctx_of(request)
     if row["plan"] != "pro":
@@ -243,34 +242,60 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
     tpl = catalog.get(body.get("template_id") or "")
     if tpl is None:
         raise HTTPException(404, {"code": "no_template"})
-    text = services.clean_text(body.get("text"), c.settings.text_max)
-    color, stroke = services.clean_color(body.get("color")), services.clean_color(body.get("stroke"))
-    size = services.clean_size(body.get("size"))
-    place = services.clean_place(body.get("place"))
-    grad = services.clean_grad(body.get("grad"))
-    edit = services.clean_edit(body.get("edit"))
-    font = await own_font_path(c, row["id"], body.get("font_id"))
+    look = await render_look(c, row["id"], body)
+    return await render_response(request, row["id"], lambda: lottie.load(tpl.path), look, tpl.id)
+
+
+async def render_look(c: Context, user_id: int, body: dict) -> dict:
+    """Проверенные настройки превью: ник, шрифт, логотип, цвета, размер, положение, градиент и правки (edit)."""
+    from ..logos import load_vectors
+
     logo = None
     logo_id = services.clean_logo_id(body.get("logo_id"))
     if logo_id:
-        owned = await c.db.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (logo_id, row["id"]))
+        owned = await c.db.fetchone("SELECT 1 FROM logos WHERE id=? AND user_id=?", (logo_id, user_id))
         variants = load_vectors(c.settings.logos_dir, logo_id) if owned else []
         logo = variants[0] if variants else None
+    return {
+        "text": services.clean_text(body.get("text"), c.settings.text_max),
+        "color": services.clean_color(body.get("color")),
+        "stroke": services.clean_color(body.get("stroke")),
+        "size": services.clean_size(body.get("size")),
+        "place": services.clean_place(body.get("place")),
+        "grad": services.clean_grad(body.get("grad")),
+        "edit": services.clean_edit(body.get("edit")),
+        "font": await own_font_path(c, user_id, body.get("font_id")),
+        "logo": logo,
+    }
+
+
+def render_anim(anim: dict, look: dict, *, mark: bool) -> tuple[dict, dict, bytes]:
+    """Шаблон (или свой .tgs) + настройки → (анимация до правок, готовая анимация, байты .tgs). Тот же код, что у пака."""
+    from .. import editor, fonts, lottie
+
+    text = look["text"]
+    drawing = fonts.text_drawing(text, look["font"]) if text else None
+    base = lottie.personalize(anim, color=lottie.hex_to_rgb(look["color"]), stroke=lottie.hex_to_rgb(look["stroke"]),
+                              text=drawing, logo=look["logo"], size=lottie.text_size(look["size"]), place=look["place"],
+                              grad=look["grad"])
+    editor.add_shapes(base, look["edit"])  # новые фигуры — уже в списке частей (их двигают как обычные части)
+    out, data = editor.render(base, look["edit"], mark=mark)
+    return base, out, data
+
+
+async def render_response(request: Request, uid: int, load, look: dict, label: str) -> Response:
+    """Превью редактора: готовая анимация, части эмодзи, все цвета и проверка под Telegram (gzip JSON)."""
+    from .. import editor
 
     def build() -> bytes:
-        drawing = fonts.text_drawing(text, font) if text else None
-        base = lottie.personalize(lottie.load(tpl.path), color=lottie.hex_to_rgb(color), stroke=lottie.hex_to_rgb(stroke),
-                                  text=drawing, logo=logo, size=lottie.text_size(size), place=place,
-                                  grad=grad)
-        out, data = editor.render(base, edit, mark=True)
+        base, out, data = render_anim(load(), look, mark=True)
         return editor.gzip_json({
             "anim": out,
-            "parts": editor.parts(base, text),
+            "parts": editor.parts(base, look["text"]),
             "colors": editor.colors(base),
             "checks": editor.check(out, data, base),
         })
 
-    uid = row["id"]
     mine = _render_latest[uid] = _render_latest.get(uid, 0) + 1
     lock = _render_locks.setdefault(uid, asyncio.Lock())
     async with lock:
@@ -279,7 +304,7 @@ async def render_preview(request: Request, body: dict = Body(...), row=Depends(u
         try:
             payload = await asyncio.to_thread(build)
         except Exception:
-            log.exception("render failed: %s %s", tpl.id, edit)
+            log.exception("render failed: %s %s", label, look["edit"])
             raise HTTPException(500, {"code": "render_failed"}) from None
     return Response(payload, media_type="application/json",
                     headers={"Content-Encoding": "gzip", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

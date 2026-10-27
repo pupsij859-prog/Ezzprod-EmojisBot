@@ -83,7 +83,8 @@ def _dev_bypass_allowed(request: Request) -> bool:
 
 
 async def current_user(request: Request) -> dict:
-    """Зависимость: возвращает dict Telegram-пользователя (id, first_name, …)."""
+    """Зависимость: возвращает dict Telegram-пользователя (id, first_name, …).
+    Mini App шлёт «tma <initData>», сайт (веб-редактор) — «Bearer <токен сессии>» из входа через Telegram."""
     settings = request.app.state.settings
 
     dev_id = request.headers.get("x-dev-user")
@@ -96,6 +97,13 @@ async def current_user(request: Request) -> dict:
 
     header = request.headers.get("authorization", "")
     scheme, _, init_data = header.partition(" ")
+    if scheme.lower() == "bearer" and init_data:
+        from .web_login import session_user
+
+        user = await session_user(request.app.state.ctx.db, init_data.strip())
+        if user is None:
+            raise HTTPException(401, "unauthorized")
+        return user
     if scheme.lower() != "tma" or not init_data:
         raise HTTPException(401, "unauthorized")
     try:

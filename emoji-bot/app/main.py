@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.admin import router as admin_router
 from .api.routes import install_error_handlers, router
+from .api.web import router as web_router
 from .config import WEBAPP_DIR, Settings
 from .context import Context
 from .db import Database
@@ -22,6 +23,7 @@ log = logging.getLogger("ezzprod")
 # Ограничения тела запроса проверяются ДО разбора (иначе multipart успевает долиться на диск)
 MAX_JSON_BODY = 64 * 1024
 MAX_UPLOAD_BODY = 3 * 1024 * 1024
+UPLOAD_PATHS = ("/api/logos", "/api/fonts", "/api/web/render", "/api/web/export")  # файлы: логотип, шрифт, свой .tgs
 
 
 # Политика для HTML Mini App: свой код, скрипт Telegram, Lottie с cdnjs (анимированные эмодзи), шрифт с Google.
@@ -51,7 +53,7 @@ class BodyLimitMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
             return await self.app(scope, receive, send)
-        limit = MAX_UPLOAD_BODY if scope["path"] in ("/api/logos", "/api/fonts") else MAX_JSON_BODY
+        limit = MAX_UPLOAD_BODY if scope["path"] in UPLOAD_PATHS else MAX_JSON_BODY
         declared = dict(scope.get("headers") or []).get(b"content-length")
         if declared is not None and declared.isdigit() and int(declared) > limit:
             return await self._reject(send)
@@ -222,6 +224,7 @@ def create_app(settings: Settings | None = None, *, with_bot: bool = True) -> Fa
     app.state.settings = settings
     install_error_handlers(app)
     app.include_router(router)
+    app.include_router(web_router)
     app.include_router(admin_router)
     if settings.dev_mode:
         from .api.dev import router as dev_router  # в проде модуль даже не импортируется
@@ -246,8 +249,17 @@ def create_app(settings: Settings | None = None, *, with_bot: bool = True) -> Fa
             response.headers["Cache-Control"] = "public, max-age=3600" if heavy else "no-cache"
         return response
 
-    # самый внешний слой: тело режется до того, как его начнут разбирать маршруты и multipart
+    # тело режется до того, как его начнут разбирать маршруты и multipart
     app.add_middleware(BodyLimitMiddleware)
+    if settings.web_origins:
+        # веб-редактор на сайте EzzProd (другой домен). Только перечисленные адреса; вход — заголовком
+        # Authorization (токен сессии), не cookie, поэтому allow_credentials не нужен. Самый внешний слой:
+        # заголовки CORS получают и ответы 413 от BodyLimitMiddleware.
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(CORSMiddleware, allow_origins=list(settings.web_origins),
+                           allow_methods=["GET", "POST", "DELETE"],
+                           allow_headers=["Authorization", "Content-Type", "Idempotency-Key"], max_age=600)
 
     @app.exception_handler(404)
     async def not_found(request: Request, exc):

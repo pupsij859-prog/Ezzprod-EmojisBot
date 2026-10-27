@@ -8,6 +8,7 @@ edit = {
   "parts":  {"<id части>": {"x", "y", "s", "r", "o", "fill", "anim"}},  # сдвиг, масштаб %, поворот °, прозрачность %
   "colors": {"#исходный": "#новый"},                                       # «все цвета»
   "fx": {"pixel": {...}, "metal": {...}, "glitch": {...}, "holo": {...}, "burst": {...}},
+  "add": [{"kind": "square", "fill": "#rrggbb", "round": 0..50}],          # новые фигуры (веб-редактор), части r.9001…
 }
 
 Часть эмодзи — слой-фигура Lottie (ty 4) в корне или в прекомпозиции; id «r.<ind>» или «a<номер ассета>.<ind>».
@@ -117,7 +118,7 @@ def clean_edit(raw) -> dict | None:
     """Проверяет edit от клиента. → чистая копия или None (правок нет). Ошибка формата — ValueError."""
     if raw in (None, {}):
         return None
-    if not isinstance(raw, dict) or not set(raw) <= {"parts", "colors", "fx"}:
+    if not isinstance(raw, dict) or not set(raw) <= {"parts", "colors", "fx", "add"}:
         raise ValueError("edit")
     out: dict = {}
     parts = raw.get("parts") or {}
@@ -161,7 +162,46 @@ def clean_edit(raw) -> dict | None:
             clean_fx[name] = c
     if clean_fx:
         out["fx"] = clean_fx
+    add = raw.get("add") or []
+    if not isinstance(add, list) or len(add) > ADD_MAX:
+        raise ValueError("add")
+    clean_add = []
+    for shape in add:
+        if not isinstance(shape, dict) or shape.get("kind") not in ADD_KINDS or not set(shape) <= {"kind", "fill", "round"}:
+            raise ValueError("add")
+        clean_add.append({"kind": shape["kind"], "fill": _hex(shape.get("fill")) or "#ffffff",
+                          "round": int(_num(shape.get("round", 0), 0, 50))})
+    if clean_add:
+        out["add"] = clean_add
     return out or None
+
+
+# ───────────────────────── новые фигуры (веб-редактор: кнопка «квадрат») ─────────────────────────
+
+ADD_KINDS = ("square",)
+ADD_MAX = 8
+ADD_IND = 9001  # номера слоёв новых фигур: id части «r.9001», «r.9002»… — по ним их двигают и красят как обычные части
+ADD_SIZE = 160
+
+
+def add_shapes(anim: dict, edit: dict | None) -> dict:
+    """Добавляет фигуры из edit["add"] поверх эмодзи (по центру холста) и возвращает анимацию. Повторный вызов
+    ничего не дублирует. Дальше это обычные части: сдвиг, масштаб, цвет и анимация — через edit["parts"]."""
+    shapes = (edit or {}).get("add") or []
+    layers = anim.setdefault("layers", [])
+    have = {L.get("ind") for L in layers if isinstance(L, dict)}
+    w, h = anim.get("w") or 512, anim.get("h") or 512
+    ip, op = anim.get("ip", 0), anim.get("op", 60)
+    for i, shape in enumerate(shapes):
+        ind = ADD_IND + i
+        if ind in have:
+            continue
+        side = ADD_SIZE * min(w, h) / 512
+        rect = _rect(0, 0, side, side, lottie.hex_to_rgb(shape["fill"]))
+        rect[0]["it"][0]["r"] = {"a": 0, "k": round(side * shape["round"] / 100, 1)}
+        layer = _layer(ind, f"квадрат {i + 1}", rect, ip, op, {"p": {"a": 0, "k": [w / 2, h / 2, 0]}})
+        layers.insert(0, layer)  # первый слой Lottie рисуется поверх остальных
+    return anim
 
 
 # ───────────────────────── геометрия ─────────────────────────
@@ -1211,6 +1251,7 @@ def apply(anim: dict, edit: dict | None, *, mark: bool = False, ghosts: bool = T
           grid: int | None = None) -> dict:
     """Применяет edit к анимации (на месте) и возвращает её. mark — подписать слои частей (id в SVG превью)."""
     edit = edit or {}
+    add_shapes(anim, edit)
     index = _layer_index(anim)
     if mark:
         for pid, (_layers, L) in index.items():

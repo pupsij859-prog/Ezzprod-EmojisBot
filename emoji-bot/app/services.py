@@ -718,6 +718,19 @@ async def delete_style(db: Database, user_id: int, style_id: int) -> bool:
         return cur.rowcount > 0
 
 
+# ───────────────────────── скачивание .tgs (веб-редактор) ─────────────────────────
+
+async def charge_export(db: Database, user_id: int, price: int, idem_key: str) -> bool:
+    """Списывает цену «скачать .tgs» через ledger. Ключ идемпотентности — часть ref: повтор не списывает второй раз.
+    → True, если списали сейчас. Не хватает генераций — InsufficientBalance."""
+    if price <= 0:
+        return False
+    if not IDEM_KEY.match(idem_key):
+        raise ValidationFailed("idempotency_key")
+    async with db.tx() as t:
+        return await _apply(t, user_id, -price, "export", f"{user_id}:{idem_key}")
+
+
 # ───────────────────────── платежи ─────────────────────────
 
 async def create_payment(

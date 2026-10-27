@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from .. import pricing, services
 from .routes import InvoiceIn, ctx_of, user_row
@@ -26,3 +27,18 @@ async def dev_pay(body: InvoiceIn, request: Request, row=Depends(user_row)):
         c.db, c.settings, payment_id, f"dev-{uuid.uuid4().hex}", q.stars, row["id"], provider="dev"
     )
     return {"paid": True, "balance": result.balance if result else None}
+
+
+class WebLoginIn(BaseModel):
+    id: int = Field(ge=1, le=10**12)
+
+
+@router.post("/web-login")
+async def dev_web_login(body: WebLoginIn, request: Request):
+    """Вход на сайт без Telegram Login Widget (виджет не работает на localhost): тестовый пользователь → токен сессии."""
+    from ..auth import _dev_bypass_allowed
+    from .web import _session_for
+
+    if not _dev_bypass_allowed(request):
+        raise HTTPException(403, {"code": "forbidden"})
+    return await _session_for(ctx_of(request), {"id": body.id, "first_name": "dev", "username": f"dev{body.id}"})

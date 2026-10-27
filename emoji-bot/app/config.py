@@ -83,6 +83,19 @@ def _pairs(name: str) -> tuple[tuple[str, str], ...]:
     return tuple(out)
 
 
+def _origins(name: str) -> tuple[str, ...]:
+    """Адреса сайтов для CORS: «https://site.ru, http://localhost:5173» → без «/» на конце, только http(s)."""
+    out = []
+    for part in _str(name).replace(";", ",").split(","):
+        origin = part.strip().rstrip("/")
+        if not origin:
+            continue
+        if not origin.startswith(("https://", "http://")) or origin.count("/") != 2:
+            raise SystemExit(f"{name}: ожидается адрес сайта вида https://example.com, сейчас: {part!r}")
+        out.append(origin)
+    return tuple(out)
+
+
 def _is_local_url(url: str) -> bool:
     # сравниваем именно имя хоста: «http://localhost.evil.com» не локальный
     if url == "":
@@ -116,6 +129,11 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     data_dir: Path = app_data_dir()
+
+    # веб-редактор на сайте (другой домен): вход через Telegram Login Widget и CORS только для этих адресов
+    web_origins: tuple[str, ...] = ()  # например https://ezzprod.31-77-17-164.sslip.io
+    web_session_days: int = 30         # сколько живёт вход на сайте
+    web_export_price: int = 1          # сколько генераций стоит «скачать .tgs» в веб-редакторе (0 — бесплатно)
 
     # экономика
     signup_gens: int = 1            # подарок новичку
@@ -196,6 +214,9 @@ class Settings:
             host=_str("HOST", "127.0.0.1"),
             port=_int("PORT", 8000),
             data_dir=Path(_str("DATA_DIR")) if _str("DATA_DIR") else app_data_dir(),
+            web_origins=_origins("WEB_ORIGINS"),
+            web_session_days=_int("WEB_SESSION_DAYS", 30),
+            web_export_price=_int("WEB_EXPORT_PRICE", 1),
             signup_gens=_int("SIGNUP_GENS", 1),
             price_rub=_int("PRICE_RUB", 5),
             bulk_discount_from=_int("BULK_DISCOUNT_FROM", 30),
