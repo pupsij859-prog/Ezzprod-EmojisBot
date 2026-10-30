@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException,
 from fastapi.responses import Response
 
 from .. import catalog, services, web_login
+from ..auth import current_user
 from .routes import ctx_of, render_anim, render_look, render_response, user_row
 
 router = APIRouter(prefix="/api/web")
@@ -64,6 +65,13 @@ async def web_login_route(request: Request, body: dict = Body(...)):
     except web_login.LoginError:
         raise HTTPException(401, {"code": "bad_login"}) from None
     return await _session_for(c, tg)
+
+
+@router.get("/whoami")
+async def web_whoami(tg: dict = Depends(current_user)):
+    """Кто вошёл на сайт: только Telegram ID, без проверок подписки этого бота. Им пользуется сервер EzzMusic —
+    у него свой бот, поэтому он не может сам проверить вход через виджет и спрашивает здесь по токену сессии."""
+    return {"id": tg["id"]}
 
 
 @router.post("/logout")

@@ -73,6 +73,13 @@ def test_bad_login_and_sessions(web):
     assert web.get("/api/me", headers=bearer(token)).status_code == 401
 
 
+def test_whoami_for_music_server(web):
+    assert web.get("/api/web/whoami").status_code == 401
+    assert web.get("/api/web/whoami", headers=bearer("nope")).status_code == 401
+    token = web.post("/api/web/login", json=sign_login(USER)).json()["token"]
+    assert web.get("/api/web/whoami", headers=bearer(token)).json() == {"id": 777}
+
+
 def test_cors_only_for_site(web):
     pre = {"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,idempotency-key"}
     ok = web.options("/api/packs", headers={"Origin": SITE, **pre})
